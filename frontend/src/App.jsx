@@ -13,6 +13,7 @@ function App() {
   );
   const [events, setEvents] = useState([]);
   const [pagination, setPagination] = useState({ limit: 500, offset: 0, total: 0 });
+  const [loadingPreview, setLoadingPreview] = useState({});
 
   // tema
   useEffect(() => {

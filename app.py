@@ -400,21 +400,18 @@ def get_webhooks():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT DISTINCT ON (w.webhook_id)
-                       w.payload,
-                       p.title,
-                       p.price,
-                       p.currency_id,
-                       p.thumbnail
+                SELECT w.payload, 
+                    p.title, p.price, p.currency_id, p.thumbnail,
+                    p.winner, p.winner_price, p.status
                 FROM webhooks w
                 LEFT JOIN ml_previews p ON w.resource = p.resource
                 WHERE w.topic = %s
-                ORDER BY w.webhook_id, w.received_at DESC
+                ORDER BY w.received_at DESC
                 LIMIT %s OFFSET %s
                 """,
                 (topic, limit, offset),
             )
-            for payload, title, price, currency_id, thumbnail in cur.fetchall():
+            for payload, title, price, currency_id, thumbnail, winner, winner_price, status in cur.fetchall():
                 if isinstance(payload, str):
                     payload = json.loads(payload)
 
@@ -425,6 +422,9 @@ def get_webhooks():
                         "price": price,
                         "currency_id": currency_id,
                         "thumbnail": thumbnail,
+                        "winner": winner,
+                        "winner_price": winner_price,
+                        "status": status,
                     }
                 else:
                     payload["preview"] = None

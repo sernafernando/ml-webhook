@@ -1,5 +1,7 @@
 import psycopg2
+from dotenv import load_dotenv
 import os
+load_dotenv()
 from app import fetch_and_store_preview, conn
 
 

@@ -389,6 +389,67 @@ def ml_preview():
 
     return jsonify(fetch_and_store_preview(resource))
 
+@app.route("/consulta", methods=["GET", "POST"])
+def consulta():
+    item_id = None
+    mode = "items"
+    data = None
+    error = None
+
+    if request.method == "POST":
+        item_id = request.form.get("item_id")
+        mode = request.form.get("mode", "items")
+
+        if item_id:
+            resource = f"/items/{item_id}" if mode == "items" else f"/items/{item_id}/price_to_win"
+
+            try:
+                token = get_token()
+                headers = {"Authorization": f"Bearer {token}"}
+                res = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+                data = res.json()
+            except Exception as e:
+                error = str(e)
+
+    # render HTML
+    html_parts = [
+        """
+        <html>
+        <head>
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        </head>
+        <body class="bg-dark text-light p-3" data-bs-theme="dark">
+            <div class="container">
+              <h2 class="mb-3">🔍 Consulta manual de MLA</h2>
+              <form method="POST" class="mb-4">
+                <div class="input-group mb-3">
+                  <input type="text" class="form-control" name="item_id" placeholder="Ej: MLA123456" required>
+                  <select class="form-select" name="mode">
+                    <option value="items">Consulta Items</option>
+                    <option value="price_to_win">Consulta Price to Win</option>
+                  </select>
+                  <button class="btn btn-primary" type="submit">Consultar</button>
+                </div>
+              </form>
+        """
+    ]
+
+    if error:
+        html_parts.append(f"<div class='alert alert-danger'>❌ Error: {error}</div>")
+
+    if data:
+        html_parts.append("<h4>Resultado</h4>")
+        html_parts.append(render_json_as_html(data))
+
+    html_parts.append("""
+            </div>
+            <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+        </body></html>
+    """)
+
+    return "".join(html_parts)
+
+
 # frontend
 @app.route("/")
 def index():

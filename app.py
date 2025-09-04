@@ -86,57 +86,69 @@ def fetch_and_store_preview(resource):
     try:
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
-        url = f"https://api.mercadolibre.com{resource}"
-        res = requests.get(url, headers=headers)
-        data = res.json()
 
-        preview = {
-            "resource": resource,
-            "title": data.get("title", ""),
-            "price": data.get("price", 0),
-            "currency_id": data.get("currency_id", ""),
-            "thumbnail": data.get("thumbnail", ""),
-            "extra": {}
-        }
-
-        # Caso especial: price_to_win
+        # caso especial price_to_win
         if resource.endswith("/price_to_win"):
-            item_id = data.get("item_id")
-            catalog_product_id = data.get("catalog_product_id")
-            winner = data.get("winner", {})
-            winner_id = winner.get("item_id")
-            winner_price = winner.get("price")
-            current_price = data.get("current_price")
-            status = data.get("status")
-            competitors_sharing = data.get("competitors_sharing_first_place", 0)
-            competitors_label = "Competidor" if competitors_sharing == 1 else "Competidores"
+            base_resource = resource.split("/price_to_win")[0]
 
-            messages = []
-            if item_id == winner_id:
-                messages.append("🎉 Estás Ganando el Catálogo!")
-            if current_price and winner_price and current_price > winner_price:
-                diff = current_price - winner_price
-                messages.append(f"🚫 Estás perdiendo el catálogo por ${diff}")
-            if status == "sharing_first_place":
-                messages.append(f"⚠️ Estás compartiendo el primer lugar con {competitors_sharing} {competitors_label}.")
+            # primero la data base del ítem
+            item_res = requests.get(f"https://api.mercadolibre.com{base_resource}", headers=headers)
+            item_data = item_res.json()
 
-            preview["extra"] = {
-                "item_id": item_id,
-                "catalog_product_id": catalog_product_id,
-                "messages": messages
+            # luego la data de price_to_win
+            ptw_res = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            ptw_data = ptw_res.json()
+
+            preview = {
+                "resource": resource,
+                "title": item_data.get("title", ""),
+                "thumbnail": item_data.get("thumbnail", ""),
+                "currency_id": ptw_data.get("currency_id", ""),
+                "price": ptw_data.get("current_price"),
+                "winner": ptw_data.get("winner", {}).get("item_id"),
+                "winner_price": ptw_data.get("winner", {}).get("price"),
+                "status": ptw_data.get("status"),
             }
 
+        else:
+            # caso común: solo /items
+            res = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            data = res.json()
+            preview = {
+                "resource": resource,
+                "title": data.get("title", ""),
+                "price": data.get("price", 0),
+                "currency_id": data.get("currency_id", ""),
+                "thumbnail": data.get("thumbnail", ""),
+                "status": None,
+                "winner": None,
+                "winner_price": None,
+            }
+
+        # guardar en la tabla
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, last_updated)
-                VALUES (%s, %s, %s, %s, %s, NOW())
+                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, winner, winner_price, status, last_updated)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                 ON CONFLICT (resource) DO UPDATE
-                SET title = EXCLUDED.title,
-                    price = EXCLUDED.price,
-                    currency_id = EXCLUDED.currency_id,
-                    thumbnail = EXCLUDED.thumbnail,
-                    last_updated = NOW();
-            """, (preview["resource"], preview["title"], preview["price"], preview["currency_id"], preview["thumbnail"]))
+                SET title=EXCLUDED.title,
+                    price=EXCLUDED.price,
+                    currency_id=EXCLUDED.currency_id,
+                    thumbnail=EXCLUDED.thumbnail,
+                    winner=EXCLUDED.winner,
+                    winner_price=EXCLUDED.winner_price,
+                    status=EXCLUDED.status,
+                    last_updated=NOW();
+            """, (
+                preview["resource"],
+                preview["title"],
+                preview["price"],
+                preview["currency_id"],
+                preview["thumbnail"],
+                preview["winner"],
+                preview["winner_price"],
+                preview["status"]
+            ))
             conn.commit()
 
         return preview

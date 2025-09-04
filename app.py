@@ -378,8 +378,10 @@ def render_meli_resource():
         <html>
           <head>
             <meta charset="utf-8">
-            <title>ML Webhook Viewer</title>
+            <title>Consultas ML API</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+            <link rel="icon" href="/public/white-g.png">
+            <link rel="apple-touch-icon" href="/public/white-g.png">
           </head>
           <body class="bg-dark text-light p-3" data-bs-theme="dark">
             {body}
@@ -451,7 +453,10 @@ def consulta():
         f"""
         <html>
         <head>
+            <title>Consultas ML API</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+            <link rel="icon" href="/public/white-g.png">
+            <link rel="apple-touch-icon" href="/public/white-g.png">
         </head>
         <body class="bg-dark text-light p-3" data-bs-theme="dark">
             <div class="container">

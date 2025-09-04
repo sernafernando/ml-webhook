@@ -432,7 +432,7 @@ def consulta():
 
     if request.method == "POST":
         item_id = request.form.get("item_id")
-        mode = request.form.get("mode", "items")
+        mode = request.form.get("mode", "price_to_win")
 
         if item_id:
             resource = f"/items/{item_id}" if mode == "items" else f"/items/{item_id}/price_to_win"
@@ -447,24 +447,24 @@ def consulta():
 
     # render HTML
     html_parts = [
-        """
+        f"""
         <html>
         <head>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
         </head>
         <body class="bg-dark text-light p-3" data-bs-theme="dark">
             <div class="container">
-              <h2 class="mb-3">🔍 Consulta manual de MLA</h2>
-              <form method="POST" class="mb-4">
+            <h2 class="mb-3">🔍 Consulta manual de MLA</h2>
+            <form method="POST" class="mb-4">
                 <div class="input-group mb-3">
-                  <input type="text" class="form-control" name="item_id" placeholder="Ej: MLA123456" required>
-                  <select class="form-select" name="mode">
-                    <option value="items">Consulta Items</option>
-                    <option value="price_to_win">Consulta Price to Win</option>
-                  </select>
-                  <button class="btn btn-primary" type="submit">Consultar</button>
+                <input type="text" class="form-control" name="item_id" placeholder="Ej: MLA123456" required>
+                <select class="form-select" name="mode">
+                    <option value="items" {"selected" if mode == "items" else ""}>Consulta Items</option>
+                    <option value="price_to_win" {"selected" if mode == "price_to_win" else ""}>Consulta Price to Win</option>
+                </select>
+                <button class="btn btn-primary" type="submit">Consultar</button>
                 </div>
-              </form>
+            </form>
         """
     ]
 

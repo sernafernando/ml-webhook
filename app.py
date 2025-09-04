@@ -291,7 +291,7 @@ def render_meli_resource():
                 <title>ML Webhook Viewer</title>
                 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
             </head>
-            <body style='background:#111;color:#eee;padding:20px'>
+            <body class="bg-dark text-light p-3">
         """
         final_html += "".join(html_parts)
         final_html += """

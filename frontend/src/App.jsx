@@ -141,25 +141,36 @@ function App() {
                   </td>
                   <td>
                     {evt.preview && evt.preview.title ? (
-                      <div className="d-flex align-items-center gap-2">
-                        <img 
-                          src={evt.preview.thumbnail} 
-                          alt={evt.preview.title} 
-                          style={{width:'50px', height:'50px', objectFit:'cover'}} 
-                        />
-                        <div>
-                          <strong>{evt.preview.title}</strong><br />
-                          {evt.preview.currency_id} {evt.preview.price}
+                      <div>
+                        <div className="d-flex align-items-center gap-2">
+                          <img 
+                            src={evt.preview.thumbnail} 
+                            alt={evt.preview.title} 
+                            style={{width:'50px', height:'50px', objectFit:'cover'}} 
+                          />
+                          <div>
+                            <strong>{evt.preview.title}</strong><br />
+                            {evt.preview.currency_id} {evt.preview.price}
+                          </div>
+                          <button
+                            className="btn btn-sm btn-outline-info ms-2"
+                            onClick={async () => {
+                              await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
+                              // fetchWebhooks();
+                            }}
+                          >
+                            🔄 Refrescar
+                          </button>
                         </div>
-                        <button
-                          className="btn btn-sm btn-outline-info ms-2"
-                          onClick={async () => {
-                            await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
-                            // fetchWebhooks();
-                          }}
-                        >
-                          🔄 Refrescar
-                        </button>
+
+                        {/* 👇 mensajes extra del backend */}
+                        {evt.preview.extra && evt.preview.extra.messages && evt.preview.extra.messages.length > 0 && (
+                          <ul className="mt-2">
+                            {evt.preview.extra.messages.map((msg, i) => (
+                              <li key={i}>{msg}</li>
+                            ))}
+                          </ul>
+                        )}
                       </div>
                     ) : (
                       <div>

@@ -96,7 +96,35 @@ def fetch_and_store_preview(resource):
             "price": data.get("price", 0),
             "currency_id": data.get("currency_id", ""),
             "thumbnail": data.get("thumbnail", ""),
+            "extra": {}
         }
+
+        # Caso especial: price_to_win
+        if resource.endswith("/price_to_win"):
+            item_id = data.get("item_id")
+            catalog_product_id = data.get("catalog_product_id")
+            winner = data.get("winner", {})
+            winner_id = winner.get("item_id")
+            winner_price = winner.get("price")
+            current_price = data.get("current_price")
+            status = data.get("status")
+            competitors_sharing = data.get("competitors_sharing_first_place", 0)
+            competitors_label = "Competidor" if competitors_sharing == 1 else "Competidores"
+
+            messages = []
+            if item_id == winner_id:
+                messages.append("🎉 Estás Ganando el Catálogo!")
+            if current_price and winner_price and current_price > winner_price:
+                diff = current_price - winner_price
+                messages.append(f"🚫 Estás perdiendo el catálogo por ${diff}")
+            if status == "sharing_first_place":
+                messages.append(f"⚠️ Estás compartiendo el primer lugar con {competitors_sharing} {competitors_label}.")
+
+            preview["extra"] = {
+                "item_id": item_id,
+                "catalog_product_id": catalog_product_id,
+                "messages": messages
+            }
 
         with conn.cursor() as cur:
             cur.execute("""
@@ -112,6 +140,7 @@ def fetch_and_store_preview(resource):
             conn.commit()
 
         return preview
+
     except Exception as e:
         print(f"❌ Error obteniendo preview de {resource}:", e)
         return {"resource": resource, "title": "Error", "price": None, "currency_id": "", "thumbnail": ""}

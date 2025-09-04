@@ -1,6 +1,9 @@
 import psycopg2
 from app import fetch_and_store_preview, conn
 
+
+conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+
 with conn.cursor() as cur:
     cur.execute("SELECT DISTINCT resource FROM webhooks WHERE resource LIKE '/items/MLA%/price_to_win'")
     resources = [row[0] for row in cur.fetchall()]

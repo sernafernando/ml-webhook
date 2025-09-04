@@ -389,9 +389,11 @@ def get_webhooks():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT w.payload, p.title, p.price, p.currency_id, p.thumbnail
+                SELECT w.payload, 
+                    p.title, p.price, p.currency_id, p.thumbnail,
+                    p.status, p.winner, p.winner_price
                 FROM webhooks w
-                LEFT JOIN ml_previews p ON REPLACE(w.resource, '/price_to_win', '') = p.resource
+                LEFT JOIN ml_previews p ON w.resource = p.resource
                 WHERE w.topic = %s
                 ORDER BY w.received_at DESC
                 LIMIT %s OFFSET %s
@@ -410,7 +412,10 @@ def get_webhooks():
                         "title": title,
                         "price": price,
                         "currency_id": currency_id,
-                        "thumbnail": thumbnail
+                        "thumbnail": thumbnail,
+                        "status": row[5],          # 👈 agregar
+                        "winner": row[6],
+                        "winner_price": row[7]
                     }
                 else:
                     payload["preview"] = None

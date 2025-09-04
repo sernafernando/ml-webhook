@@ -400,22 +400,21 @@ def get_webhooks():
                 """,
                 (topic, limit, offset),
             )
-            for payload, title, price, currency_id, thumbnail in cur.fetchall():
+            for payload, title, price, currency_id, thumbnail, status, winner, winner_price in cur.fetchall():
                 if isinstance(payload, str):
                     payload = json.loads(payload)
 
                 resource = payload.get("resource", "")
 
                 if resource.startswith("/items/MLA"):
-                    base_resource = resource.split("/price_to_win")[0]
                     payload["preview"] = {
                         "title": title,
                         "price": price,
                         "currency_id": currency_id,
                         "thumbnail": thumbnail,
-                        "status": row[5],          # 👈 agregar
-                        "winner": row[6],
-                        "winner_price": row[7]
+                        "status": status,
+                        "winner": winner,
+                        "winner_price": winner_price,
                     }
                 else:
                     payload["preview"] = None

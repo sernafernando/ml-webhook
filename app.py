@@ -142,7 +142,9 @@ def webhook():
 
         resource = evento.get("resource", "")
         if resource and resource.startswith("/items/MLA"):
-            fetch_and_store_preview(resource)
+            # si viene con /price_to_win, recortamos
+            base_resource = resource.split("/price_to_win")[0]
+            fetch_and_store_preview(base_resource)
 
         return "Evento recibido", 200
 
@@ -184,8 +186,8 @@ def get_webhooks():
 
                 resource = payload.get("resource", "")
 
-                # solo aplicar preview a /items/MLAxxx o /items/MLAxxx/price_to_win
                 if resource.startswith("/items/MLA"):
+                    base_resource = resource.split("/price_to_win")[0]
                     payload["preview"] = {
                         "title": title,
                         "price": price,
@@ -278,7 +280,7 @@ def render_meli_resource():
             
             if status == "sharing_first_place":
                 html_parts.append(f"<div class='alert alert-warning' role='alert'>⚠️ Estás compartiendo el primer lugar.</div>")
-                
+
         # siempre renderizar tabla del JSON
         html_parts.append(render_json_as_html(data))
 

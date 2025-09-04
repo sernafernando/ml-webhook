@@ -156,28 +156,41 @@ def get_webhooks():
         limit = int(request.args.get("limit", 500))
         offset = int(request.args.get("offset", 0))
 
-        # total de registros en ese topic
+        # total de registros del topic
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM webhooks WHERE topic = %s", (topic,))
             total = cur.fetchone()[0]
 
-        # traer los eventos
         rows = []
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT payload
-                FROM webhooks
-                WHERE topic = %s
-                ORDER BY received_at DESC
+                SELECT w.payload, p.title, p.price, p.currency_id, p.thumbnail
+                FROM webhooks w
+                LEFT JOIN ml_previews p ON w.resource = p.resource
+                WHERE w.topic = %s
+                ORDER BY w.received_at DESC
                 LIMIT %s OFFSET %s
                 """,
                 (topic, limit, offset),
             )
-            for r in cur.fetchall():
-                payload = r[0]
+            for payload, title, price, currency_id, thumbnail in cur.fetchall():
                 if isinstance(payload, str):
                     payload = json.loads(payload)
+
+                resource = payload.get("resource", "")
+
+                # solo aplicar preview a /items/MLAxxx o /items/MLAxxx/price_to_win
+                if resource.startswith("/items/MLA"):
+                    payload["preview"] = {
+                        "title": title,
+                        "price": price,
+                        "currency_id": currency_id,
+                        "thumbnail": thumbnail
+                    }
+                else:
+                    payload["preview"] = None
+
                 rows.append(payload)
 
         return jsonify({
@@ -193,6 +206,7 @@ def get_webhooks():
     except Exception as e:
         print("❌ Error leyendo DB:", e)
         return jsonify({"error": str(e)}), 500
+
 
 
 @app.route("/api/ml/render")

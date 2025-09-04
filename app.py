@@ -152,12 +152,13 @@ def render_ml_view(resource, data):
     # -------------------------------
     elif resource.startswith("/items/MLA"):
         item_id = data.get("id")
+        permalink = data.get("permalink")
         catalog_product_id = data.get("catalog_product_id")
         ml_url = None
         if item_id and catalog_product_id:
             ml_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{item_id}"
         elif item_id:
-            ml_url = f"https://articulo.mercadolibre.com.ar/{item_id}"
+            ml_url = permalink
 
         if item_id and ml_url:
             html_parts.append(make_item_card(item_id, ml_url, data))

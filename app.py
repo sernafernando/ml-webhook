@@ -87,79 +87,76 @@ def fetch_and_store_preview(resource):
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
 
-        # caso /price_to_win
+        # -------------------------------
+        # Caso especial: /price_to_win
+        # -------------------------------
         if resource.endswith("/price_to_win"):
             base_resource = resource.replace("/price_to_win", "")
-            
-            # datos del item
-            item_res = requests.get(f"https://api.mercadolibre.com{base_resource}", headers=headers)
+            item_id = base_resource.split("/")[-1]
+
+            # Consulta /items/{id}
+            item_res = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=headers)
             item_data = item_res.json()
-            
-            # datos del price_to_win
+
+            # Consulta /items/{id}/price_to_win
             ptw_res = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
             ptw_data = ptw_res.json()
 
-            title = item_data.get("title", "")
-            thumbnail = item_data.get("thumbnail", "")
-            currency_id = item_data.get("currency_id", "")
-            price = ptw_data.get("current_price", 0)
-            status = ptw_data.get("status")
-            winner = ptw_data.get("winner", {}).get("item_id")
-            winner_price = ptw_data.get("winner", {}).get("price")
-
-            # generar mensajes extra
-            messages = []
-            if winner and item_data.get("id") == winner:
-                messages.append("🎉 Estás Ganando el Catálogo")
-            if winner_price and price and price > winner_price:
-                diff = price - winner_price
-                messages.append(f"🚫 Estás perdiendo el catálogo por ${diff}")
-            if status == "sharing_first_place":
-                messages.append("⚠️ Estás compartiendo el primer lugar")
-
-            preview = {
-                "resource": resource,
-                "title": title,
-                "thumbnail": thumbnail,
-                "currency_id": currency_id,
-                "price": price,
-                "status": status,
-                "winner": winner,
-                "winner_price": winner_price,
-                "extra": {"messages": messages}
-            }
-
-        else:
-            # caso normal /items/{id}
-            item_res = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
-            item_data = item_res.json()
             preview = {
                 "resource": resource,
                 "title": item_data.get("title", ""),
                 "thumbnail": item_data.get("thumbnail", ""),
                 "currency_id": item_data.get("currency_id", ""),
-                "price": item_data.get("price", 0),
+                "price": ptw_data.get("current_price") or ptw_data.get("price"),
+                "status": ptw_data.get("status"),
+                "winner": (ptw_data.get("winner") or {}).get("item_id"),
+                "winner_price": (ptw_data.get("winner") or {}).get("price"),
+                "extra": {"messages": []}
+            }
+
+            # Generar mensajes extra
+            if preview["winner"] and preview["winner"] == item_id:
+                preview["extra"]["messages"].append("🎉 Estás Ganando el Catálogo")
+            if preview["winner_price"] and preview["price"] and preview["price"] > preview["winner_price"]:
+                diff = preview["price"] - preview["winner_price"]
+                preview["extra"]["messages"].append(f"🚫 Estás perdiendo el catálogo por ${diff}")
+            if preview["status"] == "sharing_first_place":
+                preview["extra"]["messages"].append("⚠️ Estás compartiendo el primer lugar")
+
+        # -------------------------------
+        # Caso normal: /items/{id}
+        # -------------------------------
+        else:
+            item_res = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            item_data = item_res.json()
+
+            preview = {
+                "resource": resource,
+                "title": item_data.get("title", ""),
+                "thumbnail": item_data.get("thumbnail", ""),
+                "currency_id": item_data.get("currency_id", ""),
+                "price": item_data.get("price"),
                 "status": None,
                 "winner": None,
                 "winner_price": None,
                 "extra": {}
             }
 
-        # guardar en DB
+        # Guardar en DB
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, status, winner, winner_price, extra, last_updated)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                 ON CONFLICT (resource) DO UPDATE
-                SET title = EXCLUDED.title,
-                    price = EXCLUDED.price,
-                    currency_id = EXCLUDED.currency_id,
-                    thumbnail = EXCLUDED.thumbnail,
-                    status = EXCLUDED.status,
-                    winner = EXCLUDED.winner,
-                    winner_price = EXCLUDED.winner_price,
-                    extra = EXCLUDED.extra,
-                    last_updated = NOW();
+                SET title=EXCLUDED.title,
+                    price=EXCLUDED.price,
+                    currency_id=EXCLUDED.currency_id,
+                    thumbnail=EXCLUDED.thumbnail,
+                    status=EXCLUDED.status,
+                    winner=EXCLUDED.winner,
+                    winner_price=EXCLUDED.winner_price,
+                    extra=EXCLUDED.extra,
+                    last_updated=NOW();
             """, (
                 preview["resource"], preview["title"], preview["price"], preview["currency_id"],
                 preview["thumbnail"], preview["status"], preview["winner"], preview["winner_price"],

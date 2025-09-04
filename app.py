@@ -130,7 +130,7 @@ def render_ml_view(resource, data):
             # Aviso en el HTML
             html_parts.append(
                 "<div class='alert alert-secondary' role='alert'>"
-                "<h4>📦 Producto sin catálogo</h4>"
+                "<h4>📦 El MLA no es una publicación de catálogo</h4>"
                 "<h5>Mostrando datos del Producto</h5>"
                 "</div>"
             )

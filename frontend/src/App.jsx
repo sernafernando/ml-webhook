@@ -113,6 +113,7 @@ function App() {
                 <th>user_id</th>
                 <th>resource</th>
                 <th>Raw JSON</th>
+                <th>Preview</th>
               </tr>
             </thead>
             <tbody>
@@ -137,6 +138,19 @@ function App() {
                     >
                       Ver detalle
                     </button>
+                  </td>
+                  <td>
+                    {evt.preview && evt.preview.title ? (
+                      <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
+                        <img src={evt.preview.thumbnail} alt={evt.preview.title} style={{width:'50px', height:'50px', objectFit:'cover'}} />
+                        <div>
+                          <strong>{evt.preview.title}</strong><br />
+                          {evt.preview.currency_id} {evt.preview.price}
+                        </div>
+                      </div>
+                    ) : (
+                      <em>-</em>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -171,6 +185,16 @@ function App() {
               de {pagination.total}
             </span>
           </div>
+
+          <button
+            onClick={async () => {
+              await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`);
+              // volver a cargar eventos después de refrescar
+            }}
+          >
+            🔄 Refrescar Preview
+          </button>
+
         </section>
       )}
 

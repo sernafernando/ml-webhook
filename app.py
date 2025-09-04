@@ -304,7 +304,52 @@ def get_topics():
     except Exception as e:
         print("❌ Error obteniendo topics:", e)
         return jsonify({"error": str(e)}), 500
-    
+
+def fetch_and_store_preview(resource):
+    try:
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"https://api.mercadolibre.com{resource}"
+        res = requests.get(url, headers=headers)
+        data = res.json()
+
+        preview = {
+            "resource": resource,
+            "title": data.get("title", ""),
+            "price": data.get("price", 0),
+            "currency_id": data.get("currency_id", ""),
+            "thumbnail": data.get("thumbnail", ""),
+        }
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, last_updated)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (resource) DO UPDATE
+                SET title = EXCLUDED.title,
+                    price = EXCLUDED.price,
+                    currency_id = EXCLUDED.currency_id,
+                    thumbnail = EXCLUDED.thumbnail,
+                    last_updated = NOW();
+            """, (preview["resource"], preview["title"], preview["price"], preview["currency_id"], preview["thumbnail"]))
+            conn.commit()
+
+        return preview
+    except Exception as e:
+        print(f"❌ Error obteniendo preview de {resource}:", e)
+        return {"resource": resource, "title": "Error", "price": None, "currency_id": "", "thumbnail": ""}
+
+@app.route("/api/ml/preview")
+def ml_preview():
+    resource = request.args.get("resource")
+    if not resource:
+        return jsonify({"error": "Falta parámetro resource"}), 400
+
+    if not resource.startswith("/items/MLA"):
+        return jsonify({"error": "Solo se soportan resources de items"}), 400
+
+    return jsonify(fetch_and_store_preview(resource))
+
 # frontend
 @app.route("/")
 def index():

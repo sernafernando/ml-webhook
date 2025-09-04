@@ -82,54 +82,70 @@ def render_json_as_html(data):
     else:
         return f"<span class='text-light'>{str(data)}</span>"
 
-def fetch_and_store_preview(resource: str):
+def fetch_and_store_preview(resource):
     try:
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
-        url = f"https://api.mercadolibre.com{resource}"
-        res = requests.get(url, headers=headers)
-        data = res.json()
 
-        # Base preview
-        preview = {
-            "resource": resource,
-            "title": data.get("title", ""),
-            "price": data.get("price", 0),
-            "currency_id": data.get("currency_id", ""),
-            "thumbnail": data.get("thumbnail", ""),
-            "status": None,
-            "winner": None,
-            "winner_price": None,
-            "extra": None
-        }
+        # caso /price_to_win
+        if resource.endswith("/price_to_win"):
+            base_resource = resource.replace("/price_to_win", "")
+            
+            # datos del item
+            item_res = requests.get(f"https://api.mercadolibre.com{base_resource}", headers=headers)
+            item_data = item_res.json()
+            
+            # datos del price_to_win
+            ptw_res = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            ptw_data = ptw_res.json()
 
-        # Caso especial: price_to_win
-        if "/price_to_win" in resource:
-            preview["status"] = data.get("status")
-            preview["winner"] = (data.get("winner") or {}).get("item_id")
-            preview["winner_price"] = (data.get("winner") or {}).get("price")
+            title = item_data.get("title", "")
+            thumbnail = item_data.get("thumbnail", "")
+            currency_id = item_data.get("currency_id", "")
+            price = ptw_data.get("current_price", 0)
+            status = ptw_data.get("status")
+            winner = ptw_data.get("winner", {}).get("item_id")
+            winner_price = ptw_data.get("winner", {}).get("price")
 
-            # armar mensajes adicionales
+            # generar mensajes extra
             messages = []
-            item_id = data.get("item_id")
-            current_price = data.get("current_price")
-            winner_price = (data.get("winner") or {}).get("price")
-
-            if item_id and item_id == preview["winner"]:
-                messages.append("🎉 Estás ganando el catálogo!")
-
-            if current_price and winner_price and current_price > winner_price:
-                diff = current_price - winner_price
+            if winner and item_data.get("id") == winner:
+                messages.append("🎉 Estás Ganando el Catálogo")
+            if winner_price and price and price > winner_price:
+                diff = price - winner_price
                 messages.append(f"🚫 Estás perdiendo el catálogo por ${diff}")
+            if status == "sharing_first_place":
+                messages.append("⚠️ Estás compartiendo el primer lugar")
 
-            if preview["status"] == "sharing_first_place":
-                competitors = data.get("competitors_sharing_first_place", 0)
-                label = "Competidor" if competitors == 1 else "Competidores"
-                messages.append(f"⚠️ Estás compartiendo el primer lugar con {competitors} {label}.")
+            preview = {
+                "resource": resource,
+                "title": title,
+                "thumbnail": thumbnail,
+                "currency_id": currency_id,
+                "price": price,
+                "status": status,
+                "winner": winner,
+                "winner_price": winner_price,
+                "extra": {"messages": messages}
+            }
 
-            preview["extra"] = {"messages": messages}
+        else:
+            # caso normal /items/{id}
+            item_res = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            item_data = item_res.json()
+            preview = {
+                "resource": resource,
+                "title": item_data.get("title", ""),
+                "thumbnail": item_data.get("thumbnail", ""),
+                "currency_id": item_data.get("currency_id", ""),
+                "price": item_data.get("price", 0),
+                "status": None,
+                "winner": None,
+                "winner_price": None,
+                "extra": {}
+            }
 
-        # Persistir en DB
+        # guardar en DB
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, status, winner, winner_price, extra, last_updated)
@@ -145,23 +161,18 @@ def fetch_and_store_preview(resource: str):
                     extra = EXCLUDED.extra,
                     last_updated = NOW();
             """, (
-                preview["resource"],
-                preview["title"],
-                preview["price"],
-                preview["currency_id"],
-                preview["thumbnail"],
-                preview["status"],
-                preview["winner"],
-                preview["winner_price"],
-                json.dumps(preview["extra"]) if preview["extra"] else None,
+                preview["resource"], preview["title"], preview["price"], preview["currency_id"],
+                preview["thumbnail"], preview["status"], preview["winner"], preview["winner_price"],
+                json.dumps(preview["extra"])
             ))
             conn.commit()
 
         return preview
 
     except Exception as e:
-        print(f"❌ Error obteniendo preview de {resource}:", e)
-        return {"resource": resource, "title": "Error", "price": None, "currency_id": "", "thumbnail": ""}
+        print(f"❌ Error en fetch_and_store_preview {resource}: {e}")
+        return {"resource": resource, "title": "Error", "price": None}
+
 
     
 def render_ml_view(resource, data):

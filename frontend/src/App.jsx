@@ -39,7 +39,8 @@ function App() {
         const data = await res.json();
         setTopics(data);
 
-        if (!selectedTopic && data.length > 0) {
+        // si lo que hay en localStorage no está en la lista, elegir el primero
+        if ((!selectedTopic || !data.some(t => t.topic === selectedTopic)) && data.length > 0) {
           setSelectedTopic(data[0].topic);
         }
       } catch (err) {
@@ -47,7 +48,7 @@ function App() {
       }
     };
     fetchTopics();
-  }, []); // 👈 sin dependencia
+  }, []); // solo al montar
 
   // cargar eventos del topic seleccionado
   useEffect(() => {

@@ -127,8 +127,6 @@ def fetch_and_store_preview(resource: str):
                 "permalink": item_data.get("permalink", ""),
             })
 
-        # guardar en la DB
-        print("🔍 Preview generado:", json.dumps(preview, indent=2, ensure_ascii=False))
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, winner, winner_price, status, last_updated)
@@ -153,6 +151,7 @@ def fetch_and_store_preview(resource: str):
                 preview.get("status"),
             ))
             conn.commit()
+        print("🔍 Preview generado:", preview)
 
         return preview
 

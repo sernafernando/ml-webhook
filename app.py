@@ -153,24 +153,36 @@ def get_webhooks():
         limit = int(request.args.get("limit", 500))
         offset = int(request.args.get("offset", 0))
 
-        if not topic:
-            return jsonify({"error": "Falta parámetro 'topic'"}), 400
+        events_by_topic = {}
 
-        rows = []
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT payload
-                FROM webhooks
-                WHERE topic = %s
-                ORDER BY received_at DESC
-                LIMIT %s OFFSET %s
-                """,
-                (topic, limit, offset),
-            )
-            rows = [r[0] for r in cur.fetchall()]
+            if topic:
+                cur.execute(
+                    """
+                    SELECT payload
+                    FROM webhooks
+                    WHERE topic = %s
+                    ORDER BY received_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (topic, limit, offset),
+                )
+                rows = [r[0] for r in cur.fetchall()]
+                events_by_topic[topic] = rows
+            else:
+                cur.execute(
+                    """
+                    SELECT topic, payload
+                    FROM webhooks
+                    ORDER BY received_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (limit, offset),
+                )
+                for t, payload in cur.fetchall():
+                    events_by_topic.setdefault(t, []).append(payload)
 
-        return jsonify({topic: rows})
+        return jsonify(events_by_topic)
 
     except Exception as e:
         print("❌ Error leyendo DB:", e)

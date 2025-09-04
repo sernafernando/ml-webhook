@@ -161,38 +161,41 @@ function App() {
                           <div>
                             <strong>{evt.preview.title}</strong><br />
                             {evt.preview.currency_id} {evt.preview.price}
+
+                            {/* Status */}
+                            {evt.preview.status && (
+                              <div className="mt-1">
+                                <span className="badge bg-info text-dark">
+                                  {evt.preview.status}
+                                </span>
+                              </div>
+                            )}
+
+                            {/* Winner */}
+                            {evt.preview.winner && (
+                              <div className="mt-1">
+                                🏆 Ganador: {evt.preview.winner} ({evt.preview.currency_id} {evt.preview.winner_price})
+                              </div>
+                            )}
                           </div>
+
+                          {/* Botón refrescar */}
                           <button
                             className="btn btn-sm btn-outline-info ms-2"
-                            disabled={loadingPreview[evt.resource]}
                             onClick={async () => {
                               setLoadingPreview(prev => ({ ...prev, [evt.resource]: true }));
-                              try {
-                                const res = await fetch(
-                                  `/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`,
-                                  { method: "POST" }
-                                );
-                                console.log("Preview refresh status:", res.status);
-                                const resp = await fetch(
-                                  `/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`
-                                );
-                                const data = await resp.json();
-                                setEvents(data.events || []);
-                                setPagination(data.pagination || { limit, offset, total: 0 });
-                              } catch (err) {
-                                console.error("❌ Error refrescando preview:", err);
-                              } finally {
-                                setLoadingPreview(prev => ({ ...prev, [evt.resource]: false }));
-                              }
+                              await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
+                              const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
+                              const data = await res.json();
+                              setEvents(data.events || []);
+                              setPagination(data.pagination || { limit, offset, total: 0 });
+                              setLoadingPreview(prev => ({ ...prev, [evt.resource]: false }));
                             }}
+                            disabled={loadingPreview[evt.resource]}
                           >
                             {loadingPreview[evt.resource] ? (
                               <span>
-                                <span
-                                  className="spinner-border spinner-border-sm me-2"
-                                  role="status"
-                                  aria-hidden="true"
-                                ></span>
+                                <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
                                 Cargando...
                               </span>
                             ) : (
@@ -200,52 +203,26 @@ function App() {
                             )}
                           </button>
                         </div>
-
-                        {/* 👇 mensajes extra del backend */}
-                        {evt.preview.extra &&
-                          evt.preview.extra.messages &&
-                          evt.preview.extra.messages.length > 0 && (
-                            <ul className="mt-2">
-                              {evt.preview.extra.messages.map((msg, i) => (
-                                <li key={i}>{msg}</li>
-                              ))}
-                            </ul>
-                          )}
                       </div>
                     ) : (
                       <div>
                         <em>-</em>
                         <button
                           className="btn btn-sm btn-outline-secondary ms-2"
-                          disabled={loadingPreview[evt.resource]}
                           onClick={async () => {
                             setLoadingPreview(prev => ({ ...prev, [evt.resource]: true }));
-                            try {
-                              const res = await fetch(
-                                `/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`,
-                                { method: "POST" }
-                              );
-                              console.log("Preview generate status:", res.status);
-                              const resp = await fetch(
-                                `/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`
-                              );
-                              const data = await resp.json();
-                              setEvents(data.events || []);
-                              setPagination(data.pagination || { limit, offset, total: 0 });
-                            } catch (err) {
-                              console.error("❌ Error generando preview:", err);
-                            } finally {
-                              setLoadingPreview(prev => ({ ...prev, [evt.resource]: false }));
-                            }
+                            await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
+                            const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
+                            const data = await res.json();
+                            setEvents(data.events || []);
+                            setPagination(data.pagination || { limit, offset, total: 0 });
+                            setLoadingPreview(prev => ({ ...prev, [evt.resource]: false }));
                           }}
+                          disabled={loadingPreview[evt.resource]}
                         >
                           {loadingPreview[evt.resource] ? (
                             <span>
-                              <span
-                                className="spinner-border spinner-border-sm me-2"
-                                role="status"
-                                aria-hidden="true"
-                              ></span>
+                              <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
                               Generando...
                             </span>
                           ) : (

@@ -128,6 +128,7 @@ def fetch_and_store_preview(resource: str):
             })
 
         # guardar en la DB
+        print("🔍 Preview generado:", json.dumps(preview, indent=2, ensure_ascii=False))
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, winner, winner_price, status, last_updated)
@@ -429,6 +430,7 @@ def get_webhooks():
                     payload["preview"] = None
 
                 rows.append(payload)
+        print("📤 Devolviendo eventos:", json.dumps(rows, indent=2, ensure_ascii=False))
 
         return jsonify({
             "topic": topic,

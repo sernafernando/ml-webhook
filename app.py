@@ -331,10 +331,12 @@ def webhook():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO webhooks (topic, user_id, resource, payload)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO webhooks (webhook_id, topic, user_id, resource, payload)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (webhook_id) DO NOTHING;
                 """,
                 (
+                    evento.get("_id"),
                     evento.get("topic"),
                     evento.get("user_id"),
                     evento.get("resource"),

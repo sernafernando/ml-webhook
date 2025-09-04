@@ -221,7 +221,18 @@ def render_meli_resource():
                 ml_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{item_id}"
                 html_parts.append(
                     f"<h3>Vista de MercadoLibre</h3>"
-                    f"<iframe src='{ml_url}' width='100%' height='600' style='border:1px solid #444;border-radius:8px;'></iframe>"                    
+                    f"<a href='{ml_url}' target='_blank' rel='noopener noreferrer' "
+                    f"style='text-decoration:none;color:inherit;'>"
+                    f"<div style='border:1px solid #444;border-radius:8px;padding:10px;"
+                    f"margin:10px 0;display:flex;align-items:center;gap:10px;background:#222;'>"
+                    f"<img src='https://http2.mlstatic.com/D_Q_NP_{item_id}-O.webp' "
+                    f"alt='{item_id}' style='width:80px;height:80px;object-fit:cover;border-radius:6px;' />"
+                    f"<div>"
+                    f"<p style='margin:0;'>Item: {item_id}</p>"
+                    f"<small>Click para ver en Mercado Libre</small>"
+                    f"</div>"
+                    f"</div>"
+                    f"</a>"
                 )
             
             if item_id == winner_id:

@@ -170,7 +170,7 @@ def get_webhooks():
             )
             rows = [r[0] for r in cur.fetchall()]
 
-        return jsonify({"topic": topic, "events": rows})
+        return jsonify({topic: rows})
 
     except Exception as e:
         print("❌ Error leyendo DB:", e)

@@ -140,6 +140,10 @@ def webhook():
                 ),
             )
 
+        resource = evento.get("resource", "")
+        if resource and resource.startswith("/items/MLA"):
+            fetch_and_store_preview(resource)
+
         return "Evento recibido", 200
 
     except Exception as e:

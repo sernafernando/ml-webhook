@@ -148,36 +148,29 @@ def webhook():
 
 @app.route("/api/webhooks", methods=["GET"])
 def get_webhooks():
-    events_by_topic = {}
     try:
+        limit = int(request.args.get("limit", 500))   # default 500
+        offset = int(request.args.get("offset", 0))   # default 0
+
+        events_by_topic = {}
         with conn.cursor() as cur:
-            cur.execute("SELECT topic, payload FROM webhooks ORDER BY received_at DESC LIMIT 500")
+            cur.execute(
+                """
+                SELECT topic, payload
+                FROM webhooks
+                ORDER BY received_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                (limit, offset)
+            )
             for topic, payload in cur.fetchall():
                 events_by_topic.setdefault(topic, []).append(payload)
+
+        return jsonify(events_by_topic)
+
     except Exception as e:
         print("❌ Error leyendo DB:", e)
-    return jsonify(events_by_topic)
-
-@app.route("/api/ml")
-def consultar_ml():
-    resource = request.args.get("resource")
-    if not resource:
-        return jsonify({"error": "Falta parámetro 'resource'"}), 400
-
-    try:
-        token = get_token()
-    except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-    url = f"https://api.mercadolibre.com{resource}"
-    headers = {"Authorization": f"Bearer {token}"}
-
-    try:
-        res = requests.get(url, headers=headers)
-        return jsonify(res.json()), res.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 
 @app.route("/api/ml/render")
 def render_meli_resource():
@@ -217,7 +210,19 @@ def render_meli_resource():
         print("❌ Error en renderizado:", e)
         return "Error interno en renderizado", 500
 
-
+@app.route("/api/webhooks/topics", methods=["GET"])
+def get_topics():
+    try:
+        topics = []
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT topic FROM webhooks ORDER BY topic")
+            topics = [row[0] for row in cur.fetchall()]
+        return jsonify(topics)
+    except Exception as e:
+        print("❌ Error obteniendo topics:", e)
+        return jsonify({"error": str(e)}), 500
+    
+    
 # frontend
 @app.route("/")
 def index():

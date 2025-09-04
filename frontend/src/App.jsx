@@ -7,6 +7,8 @@ function App() {
   const [theme, setTheme] = useState('dark');
   const [selectedTopic, setSelectedTopic] = useState('');
   const [filter, setFilter] = useState('');
+  const [limit, setLimit] = useState(500);
+  const [offset, setOffset] = useState(0);
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('theme') || 'dark';
@@ -21,7 +23,7 @@ function App() {
   useEffect(() => {
     const fetchWebhooks = async () => {
       try {
-        const res = await fetch('/api/webhooks');
+        const res = await fetch(`/api/webhooks?limit=${limit}&offset=${offset}`);
         const data = await res.json();
         setWebhooks(data);
 
@@ -37,7 +39,7 @@ function App() {
     fetchWebhooks();
     const interval = setInterval(fetchWebhooks, 5000);
     return () => clearInterval(interval);
-  }, [selectedTopic]);
+  }, [limit, offset]); 
 
   const toggleTheme = () => {
     setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
@@ -121,7 +123,19 @@ function App() {
           </table>
         </section>
       )}
-
+      <div className="controls">
+        <label>
+          Ver últimos:
+          <select value={limit} onChange={e => { setOffset(0); setLimit(Number(e.target.value)); }}>
+            <option value={100}>100</option>
+            <option value={500}>500</option>
+            <option value={1000}>1000</option>
+            <option value={5000}>5000</option>
+          </select>
+        </label>
+        <button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))}>⬅️ Anterior</button>
+        <button onClick={() => setOffset(offset + limit)}>➡️ Siguiente</button>
+      </div>
       <button className="theme-floating-button" onClick={toggleTheme}>
         {theme === 'dark' ? <FaSun /> : <FaMoon />}
       </button>

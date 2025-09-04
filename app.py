@@ -60,7 +60,7 @@ def render_json_as_html(data):
         for k, v in data.items():
             rows.append(
                 f"<tr>"
-                f"<th scope='row' class='table-secondary'>{k}</th>"
+                f"<th scope='row' class='table-dark'>{k}</th>"
                 f"<td>{render_json_as_html(v)}</td>"
                 f"</tr>"
             )
@@ -71,7 +71,7 @@ def render_json_as_html(data):
         for i, item in enumerate(data):
             rows.append(
                 f"<tr>"
-                f"<th scope='row' class='table-secondary'>[{i}]</th>"
+                f"<th scope='row' class='table-dark'>[{i}]</th>"
                 f"<td>{render_json_as_html(item)}</td>"
                 f"</tr>"
             )
@@ -79,6 +79,7 @@ def render_json_as_html(data):
 
     else:
         return f"<span class='text-light'>{str(data)}</span>"
+
 
 
 @app.route("/auth")

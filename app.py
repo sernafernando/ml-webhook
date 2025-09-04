@@ -82,89 +82,82 @@ def render_json_as_html(data):
     else:
         return f"<span class='text-light'>{str(data)}</span>"
 
-def fetch_and_store_preview(resource):
+def fetch_and_store_preview(resource: str):
     try:
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
 
-        # -------------------------------
-        # Caso especial: /price_to_win
-        # -------------------------------
+        preview = {"resource": resource}
+
         if resource.endswith("/price_to_win"):
-            item_id = resource.split("/")[2]  # /items/MLAxxxxxx/price_to_win
-            # 1. fetch /items para título + foto
+            item_id = resource.split("/")[2]
+
+            # consulta 1: datos básicos del item
             res_item = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=headers)
             item_data = res_item.json()
 
-            # 2. fetch /items/{id}/price_to_win para status + winner + price
+            preview.update({
+                "title": item_data.get("title", ""),
+                "thumbnail": item_data.get("thumbnail", ""),
+                "currency_id": item_data.get("currency_id", ""),
+                "permalink": item_data.get("permalink", ""),
+            })
+
+            # consulta 2: datos competitivos
             res_ptw = requests.get(f"https://api.mercadolibre.com/items/{item_id}/price_to_win", headers=headers)
             ptw_data = res_ptw.json()
 
-            preview = {
-                "resource": resource,
-                "title": item_data.get("title", ""),
-                "thumbnail": item_data.get("thumbnail", ""),
+            preview.update({
                 "price": ptw_data.get("current_price"),
-                "currency_id": item_data.get("currency_id", ""),
                 "status": ptw_data.get("status"),
                 "winner": ptw_data.get("winner", {}).get("item_id"),
                 "winner_price": ptw_data.get("winner", {}).get("price"),
-            }
-            # Generar mensajes extra
-            if preview["winner"] and preview["winner"] == item_id:
-                preview["extra"]["messages"].append("🎉 Estás Ganando el Catálogo")
-            if preview["winner_price"] and preview["price"] and preview["price"] > preview["winner_price"]:
-                diff = preview["price"] - preview["winner_price"]
-                preview["extra"]["messages"].append(f"🚫 Estás perdiendo el catálogo por ${diff}")
-            if preview["status"] == "sharing_first_place":
-                preview["extra"]["messages"].append("⚠️ Estás compartiendo el primer lugar")
+            })
 
-        # -------------------------------
-        # Caso normal: /items/{id}
-        # -------------------------------
         else:
-            item_res = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
-            item_data = item_res.json()
+            # caso normal /items/{id}
+            res_item = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            item_data = res_item.json()
 
-            preview = {
-                "resource": resource,
+            preview.update({
                 "title": item_data.get("title", ""),
                 "thumbnail": item_data.get("thumbnail", ""),
                 "currency_id": item_data.get("currency_id", ""),
                 "price": item_data.get("price"),
-                "status": None,
-                "winner": None,
-                "winner_price": None,
-                "extra": {}
-            }
+                "permalink": item_data.get("permalink", ""),
+            })
 
-        # Guardar en DB
+        # guardar en la DB
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, status, winner, winner_price, extra, last_updated)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
-                ON CONFLICT (resource) DO UPDATE
-                SET title=EXCLUDED.title,
-                    price=EXCLUDED.price,
-                    currency_id=EXCLUDED.currency_id,
-                    thumbnail=EXCLUDED.thumbnail,
-                    status=EXCLUDED.status,
-                    winner=EXCLUDED.winner,
-                    winner_price=EXCLUDED.winner_price,
-                    extra=EXCLUDED.extra,
-                    last_updated=NOW();
+                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, winner, winner_price, status, last_updated)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                ON CONFLICT (resource) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    price = EXCLUDED.price,
+                    currency_id = EXCLUDED.currency_id,
+                    thumbnail = EXCLUDED.thumbnail,
+                    winner = EXCLUDED.winner,
+                    winner_price = EXCLUDED.winner_price,
+                    status = EXCLUDED.status,
+                    last_updated = NOW();
             """, (
-                preview["resource"], preview["title"], preview["price"], preview["currency_id"],
-                preview["thumbnail"], preview["status"], preview["winner"], preview["winner_price"],
-                json.dumps(preview["extra"])
+                preview["resource"],
+                preview.get("title"),
+                preview.get("price"),
+                preview.get("currency_id"),
+                preview.get("thumbnail"),
+                preview.get("winner"),
+                preview.get("winner_price"),
+                preview.get("status"),
             ))
             conn.commit()
 
         return preview
 
     except Exception as e:
-        print(f"❌ Error en fetch_and_store_preview {resource}: {e}")
-        return {"resource": resource, "title": "Error", "price": None}
+        print(f"❌ Error obteniendo preview de {resource}:", e)
+        return {"resource": resource, "title": "Error"}
 
 
     

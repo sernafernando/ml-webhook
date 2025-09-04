@@ -258,7 +258,7 @@ def render_meli_resource():
 
                 html_parts.append(
                     f"""
-                    <h3>Vista de MercadoLibre</h3>
+                    <h3>Producto:</h3>
                     <a href="{ml_url}" target="_blank" rel="noopener noreferrer" class="text-decoration-none text-reset">
                     <div class="card mb-3 bg-dark text-light border-secondary" style="max-width: 540px;">
                         <div class="row g-0">

@@ -115,14 +115,11 @@ def fetch_and_store_preview(resource):
         return {"resource": resource, "title": "Error", "price": None, "currency_id": "", "thumbnail": ""}
     
 def render_ml_view(resource, data):
-    """
-    Renderiza el resultado de un recurso de Mercado Libre.
-    - Aplica lógicas especiales si corresponde (/price_to_win, etc.)
-    - Siempre devuelve HTML listo para incrustar
-    """
     html_parts = []
 
-    # Caso especial: price_to_win
+    # -------------------------------
+    # Caso: /price_to_win
+    # -------------------------------
     if "/price_to_win" in resource:
         item_id = data.get("item_id")
         catalog_product_id = data.get("catalog_product_id")
@@ -134,44 +131,12 @@ def render_ml_view(resource, data):
         competitors_sharing = data.get("competitors_sharing_first_place", 0)
         competitors_label = "Competidor" if competitors_sharing == 1 else "Competidores"
 
+        # Card de producto (similar a /items común)
         if item_id and catalog_product_id:
             ml_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{item_id}"
-            try:
-                token = get_token()
-                ml_res = requests.get(
-                    f"https://api.mercadolibre.com/items/{item_id}",
-                    headers={"Authorization": f"Bearer {token}"}
-                )
-                ml_data = ml_res.json()
-                title = ml_data.get("title", f"Item {item_id}")
-                price = ml_data.get("price", "—")
-                currency = ml_data.get("currency_id", "")
-                thumbnail = ml_data.get("thumbnail", "")
-            except Exception:
-                title, price, currency, thumbnail = f"Item {item_id}", "—", "", ""
+            html_parts.append(make_item_card(item_id, ml_url))
 
-            html_parts.append(
-                f"""
-                <h3>Producto:</h3>
-                <a href="{ml_url}" target="_blank" rel="noopener noreferrer" class="text-decoration-none text-reset">
-                  <div class="card mb-3 bg-dark text-light border-secondary" style="max-width: 540px;">
-                    <div class="row g-0">
-                      <div class="col-md-4 d-flex align-items-center justify-content-center p-2">
-                        <img src="{thumbnail}" alt="{title}" class="img-fluid rounded-start" style="max-height: 100px; object-fit: cover;" />
-                      </div>
-                      <div class="col-md-8">
-                        <div class="card-body">
-                          <h5 class="card-title">{title}</h5>
-                          <p class="card-text">{currency} {price}</p>
-                          <p class="card-text"><small class="text-muted">Click para ver en Mercado Libre</small></p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </a>
-                """
-            )
-
+        # Alerts
         if item_id == winner_id:
             html_parts.append("<div class='alert alert-success' role='alert'>🎉 Estás Ganando el Catálogo!</div>")
 
@@ -182,15 +147,65 @@ def render_ml_view(resource, data):
         if status == "sharing_first_place":
             html_parts.append(f"<div class='alert alert-warning' role='alert'>⚠️ Estás compartiendo el primer lugar con {competitors_sharing} {competitors_label}.</div>")
 
-    # 🔹 En el futuro, podés ir metiendo más casos especiales:
-    # if resource.startswith("/orders/"): ...
-    # if resource.startswith("/shipments/"): ...
-    # etc.
+    # -------------------------------
+    # Caso: /items común
+    # -------------------------------
+    elif resource.startswith("/items/MLA"):
+        item_id = data.get("id")
+        catalog_product_id = data.get("catalog_product_id")
+        ml_url = None
+        if item_id and catalog_product_id:
+            ml_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{item_id}"
+        elif item_id:
+            ml_url = f"https://articulo.mercadolibre.com.ar/{item_id}"
 
-    # Siempre renderizar tabla del JSON
+        if item_id and ml_url:
+            html_parts.append(make_item_card(item_id, ml_url, data))
+
+    # -------------------------------
+    # Siempre: tabla JSON
+    # -------------------------------
     html_parts.append(render_json_as_html(data))
+    return "".join(html_parts)
 
-    return "".join(html_parts)    
+
+def make_item_card(item_id, ml_url, ml_data=None):
+    """Helper para renderizar una card de un item MLA"""
+    try:
+        if not ml_data:
+            token = get_token()
+            res = requests.get(
+                f"https://api.mercadolibre.com/items/{item_id}",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            ml_data = res.json()
+    except Exception:
+        ml_data = {}
+
+    title = ml_data.get("title", f"Item {item_id}")
+    price = ml_data.get("price", "—")
+    currency = ml_data.get("currency_id", "")
+    thumbnail = ml_data.get("thumbnail", "")
+
+    return f"""
+        <h3>Producto:</h3>
+        <a href="{ml_url}" target="_blank" rel="noopener noreferrer" class="text-decoration-none text-reset">
+          <div class="card mb-3 bg-dark text-light border-secondary" style="max-width: 540px;">
+            <div class="row g-0">
+              <div class="col-md-4 d-flex align-items-center justify-content-center p-2">
+                <img src="{thumbnail}" alt="{title}" class="img-fluid rounded-start" style="max-height: 100px; object-fit: cover;" />
+              </div>
+              <div class="col-md-8">
+                <div class="card-body">
+                  <h5 class="card-title">{title}</h5>
+                  <p class="card-text">{currency} {price}</p>
+                  <p class="card-text"><small class="text-muted">Click para ver en Mercado Libre</small></p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </a>
+    """
 
 @app.route("/auth")
 def auth():

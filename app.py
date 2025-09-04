@@ -250,14 +250,25 @@ def render_meli_resource():
                 )
             
             if item_id == winner_id:
-                html_parts.append(
-                    f"<br>"
-                    f"<h3>🎉 ¡Estás Ganando el Catálogo!</h3>"
-                )   
+                html_parts.append(f"<div class='alert alert-success' role='alert'>🎉 Operación realizada correctamente.</div>")   
+                
         # siempre renderizar tabla del JSON
         html_parts.append(render_json_as_html(data))
 
-        final_html = "<html><body style='background:#111;color:#eee;padding:20px'>" + "".join(html_parts) + "</body></html>"
+        final_html = """
+        <html>
+            <head>
+                <meta charset="utf-8">
+                <title>ML Webhook Viewer</title>
+                <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+            </head>
+            <body style='background:#111;color:#eee;padding:20px'>
+        """
+        final_html += "".join(html_parts)
+        final_html += """
+            </body>
+        </html>
+        """
         return final_html, 200
 
     except Exception as e:

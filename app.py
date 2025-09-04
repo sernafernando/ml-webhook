@@ -80,7 +80,39 @@ def render_json_as_html(data):
     else:
         return f"<span class='text-light'>{str(data)}</span>"
 
+def fetch_and_store_preview(resource):
+    try:
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"https://api.mercadolibre.com{resource}"
+        res = requests.get(url, headers=headers)
+        data = res.json()
 
+        preview = {
+            "resource": resource,
+            "title": data.get("title", ""),
+            "price": data.get("price", 0),
+            "currency_id": data.get("currency_id", ""),
+            "thumbnail": data.get("thumbnail", ""),
+        }
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, last_updated)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (resource) DO UPDATE
+                SET title = EXCLUDED.title,
+                    price = EXCLUDED.price,
+                    currency_id = EXCLUDED.currency_id,
+                    thumbnail = EXCLUDED.thumbnail,
+                    last_updated = NOW();
+            """, (preview["resource"], preview["title"], preview["price"], preview["currency_id"], preview["thumbnail"]))
+            conn.commit()
+
+        return preview
+    except Exception as e:
+        print(f"❌ Error obteniendo preview de {resource}:", e)
+        return {"resource": resource, "title": "Error", "price": None, "currency_id": "", "thumbnail": ""}
 
 @app.route("/auth")
 def auth():
@@ -142,9 +174,25 @@ def webhook():
             )
 
         resource = evento.get("resource", "")
+        base_resource = None
         if resource and resource.startswith("/items/MLA"):
-            # si viene con /price_to_win, recortamos
             base_resource = resource.split("/price_to_win")[0]
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO webhooks (topic, user_id, resource, payload)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    evento.get("topic"),
+                    evento.get("user_id"),
+                    base_resource or resource,   # 👈 guardamos normalizado
+                    Json(evento),
+                ),
+            )
+
+        if base_resource:
             fetch_and_store_preview(base_resource)
 
         return "Evento recibido", 200
@@ -174,7 +222,7 @@ def get_webhooks():
                 """
                 SELECT w.payload, p.title, p.price, p.currency_id, p.thumbnail
                 FROM webhooks w
-                LEFT JOIN ml_previews p ON w.resource = p.resource
+                LEFT JOIN ml_previews p ON REPLACE(w.resource, '/price_to_win', '') = p.resource
                 WHERE w.topic = %s
                 ORDER BY w.received_at DESC
                 LIMIT %s OFFSET %s
@@ -326,39 +374,7 @@ def get_topics():
         print("❌ Error obteniendo topics:", e)
         return jsonify({"error": str(e)}), 500
 
-def fetch_and_store_preview(resource):
-    try:
-        token = get_token()
-        headers = {"Authorization": f"Bearer {token}"}
-        url = f"https://api.mercadolibre.com{resource}"
-        res = requests.get(url, headers=headers)
-        data = res.json()
 
-        preview = {
-            "resource": resource,
-            "title": data.get("title", ""),
-            "price": data.get("price", 0),
-            "currency_id": data.get("currency_id", ""),
-            "thumbnail": data.get("thumbnail", ""),
-        }
-
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, last_updated)
-                VALUES (%s, %s, %s, %s, %s, NOW())
-                ON CONFLICT (resource) DO UPDATE
-                SET title = EXCLUDED.title,
-                    price = EXCLUDED.price,
-                    currency_id = EXCLUDED.currency_id,
-                    thumbnail = EXCLUDED.thumbnail,
-                    last_updated = NOW();
-            """, (preview["resource"], preview["title"], preview["price"], preview["currency_id"], preview["thumbnail"]))
-            conn.commit()
-
-        return preview
-    except Exception as e:
-        print(f"❌ Error obteniendo preview de {resource}:", e)
-        return {"resource": resource, "title": "Error", "price": None, "currency_id": "", "thumbnail": ""}
 
 @app.route("/api/ml/preview")
 def ml_preview():

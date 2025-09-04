@@ -387,13 +387,8 @@ def get_webhooks():
         limit = int(request.args.get("limit", 500))
         offset = int(request.args.get("offset", 0))
 
-        # total de registros únicos por webhook_id
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT COUNT(DISTINCT webhook_id)
-                FROM webhooks
-                WHERE topic = %s
-            """, (topic,))
+            cur.execute("SELECT COUNT(*) FROM webhooks WHERE topic = %s", (topic,))
             total = cur.fetchone()[0]
 
         rows = []
@@ -401,8 +396,8 @@ def get_webhooks():
             cur.execute(
                 """
                 SELECT w.payload, 
-                    p.title, p.price, p.currency_id, p.thumbnail,
-                    p.winner, p.winner_price, p.status
+                       p.title, p.price, p.currency_id, p.thumbnail,
+                       p.winner, p.winner_price, p.status
                 FROM webhooks w
                 LEFT JOIN ml_previews p ON w.resource = p.resource
                 WHERE w.topic = %s
@@ -411,26 +406,26 @@ def get_webhooks():
                 """,
                 (topic, limit, offset),
             )
-            for payload, title, price, currency_id, thumbnail, winner, winner_price, status in cur.fetchall():
+            for row in cur.fetchall():
+                payload = row[0]
                 if isinstance(payload, str):
                     payload = json.loads(payload)
 
-                resource = payload.get("resource", "")
-                if resource.startswith("/items/MLA"):
-                    payload["preview"] = {
-                        "title": title,
-                        "price": price,
-                        "currency_id": currency_id,
-                        "thumbnail": thumbnail,
-                        "winner": winner,
-                        "winner_price": winner_price,
-                        "status": status,
-                    }
+                preview = {
+                    "title": row[1],
+                    "price": row[2],
+                    "currency_id": row[3],
+                    "thumbnail": row[4],
+                    "winner": row[5],
+                    "winner_price": row[6],
+                    "status": row[7],
+                }
+                if payload.get("resource", "").startswith("/items/MLA"):
+                    payload["preview"] = preview
                 else:
                     payload["preview"] = None
 
                 rows.append(payload)
-        print("📤 Devolviendo eventos:", json.dumps(rows, indent=2, ensure_ascii=False))
 
         return jsonify({
             "topic": topic,
@@ -443,8 +438,11 @@ def get_webhooks():
         })
 
     except Exception as e:
+        import traceback
         print("❌ Error leyendo DB:", e)
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
 
 
 

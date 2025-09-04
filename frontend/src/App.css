@@ -1,0 +1,97 @@
+/* Tema general (oscuro) */
+:root[data-theme='dark'] {
+  --bg-color: #0d1117;
+  --text-color: #c9d1d9;
+  --table-border: #30363d;
+  --table-header-bg: #161b22;
+  --table-row-alt: #1c2128;
+  --accent: #58a6ff;
+}
+
+:root[data-theme='light'] {
+  --bg-color: #ffffff;
+  --text-color: #000000;
+  --table-border: #ccc;
+  --table-header-bg: #f2f2f2;
+  --table-row-alt: #fafafa;
+  --accent: #0366d6;
+}
+
+body,
+.App {
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  font-family: sans-serif;
+  margin: 0;
+  padding: 2rem;
+}
+
+/* Botón flotante */
+.theme-floating-button { 
+  padding: 10px 16px;
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background-color: var(--button-bg);
+  color: var(--button-text);
+  border: none;
+  border-radius: 50%;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  z-index: 1000;
+  transition: background-color 0.3s ease, transform 0.3s ease;
+}
+
+.theme-floating-button:hover {
+  background: var(--table-border);
+}
+
+/* Tabla estilizada */
+.webhook-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+.webhook-table th,
+.webhook-table td {
+  border: 1px solid var(--table-border);
+  padding: 0.75rem;
+  text-align: left;
+}
+
+.webhook-table th {
+  background-color: var(--table-header-bg);
+  color: var(--text-color);
+}
+
+.webhook-table tr:nth-child(even) {
+  background-color: var(--table-row-alt);
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.ml-button {
+  margin-top: 0.5rem;
+  padding: 6px 12px;
+  background-color: var(--button-bg);
+  color: var(--button-text);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background-color 0.3s ease;
+}
+
+.ml-button:hover {
+  background-color: var(--button-hover);
+}
+

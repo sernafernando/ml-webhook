@@ -1,0 +1,60 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.db
+*.sqlite3
+*.egg-info/
+.venv/
+env/
+venv/
+ENV/
+
+# =========================
+# Flask / Runtime
+# =========================
+instance/
+*.log
+*.pid
+*.gz
+*.json
+webhooks/          # donde guardás eventos entrantes
+last_webhook.json  # último webhook recibido
+
+# =========================
+# Node / React (Vite)
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# build output
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.bak
+*~
+
+# =========================
+# Environment / Secrets
+# =========================
+.env
+.env.local
+.env.*.local

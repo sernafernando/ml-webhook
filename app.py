@@ -125,6 +125,9 @@ def render_ml_view(resource, data):
     if "/price_to_win" in resource:
         item_id = data.get("item_id")
         catalog_product_id = data.get("catalog_product_id")
+        if not catalog_product_id:
+            # 👉 redirigís el flujo al caso items
+            resource = f"/items/{item_id}"
         winner = data.get("winner", {}) or {}
         winner_id = winner.get("item_id")
         current_price = data.get("current_price")
@@ -132,19 +135,6 @@ def render_ml_view(resource, data):
         status = data.get("status")
         competitors_sharing = data.get("competitors_sharing_first_place", 0)
         competitors_label = "Competidor" if competitors_sharing == 1 else "Competidores"
-
-        if item_id and not catalog_product_id:
-            item_id = data.get("id")
-            permalink = data.get("permalink")
-            catalog_product_id = data.get("catalog_product_id")
-            ml_url = None
-            if item_id and catalog_product_id:
-                ml_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{item_id}"
-            elif item_id:
-                ml_url = permalink
-
-            if item_id and ml_url:
-                html_parts.append(make_item_card(item_id, ml_url, data))
 
         # Card de producto (similar a /items común)
         if item_id and catalog_product_id:

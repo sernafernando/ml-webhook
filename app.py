@@ -150,39 +150,45 @@ def webhook():
 def get_webhooks():
     try:
         topic = request.args.get("topic")
+        if not topic:
+            return jsonify({"error": "Falta parámetro 'topic'"}), 400
+
         limit = int(request.args.get("limit", 500))
         offset = int(request.args.get("offset", 0))
 
-        events_by_topic = {}
-
+        # total de registros en ese topic
         with conn.cursor() as cur:
-            if topic:
-                cur.execute(
-                    """
-                    SELECT payload
-                    FROM webhooks
-                    WHERE topic = %s
-                    ORDER BY received_at DESC
-                    LIMIT %s OFFSET %s
-                    """,
-                    (topic, limit, offset),
-                )
-                rows = [r[0] for r in cur.fetchall()]
-                events_by_topic[topic] = rows
-            else:
-                cur.execute(
-                    """
-                    SELECT topic, payload
-                    FROM webhooks
-                    ORDER BY received_at DESC
-                    LIMIT %s OFFSET %s
-                    """,
-                    (limit, offset),
-                )
-                for t, payload in cur.fetchall():
-                    events_by_topic.setdefault(t, []).append(payload)
+            cur.execute("SELECT COUNT(*) FROM webhooks WHERE topic = %s", (topic,))
+            total = cur.fetchone()[0]
 
-        return jsonify(events_by_topic)
+        # traer los eventos
+        rows = []
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT payload
+                FROM webhooks
+                WHERE topic = %s
+                ORDER BY received_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                (topic, limit, offset),
+            )
+            for r in cur.fetchall():
+                payload = r[0]
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+                rows.append(payload)
+
+        return jsonify({
+            "topic": topic,
+            "events": rows,
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "total": total
+            }
+        })
 
     except Exception as e:
         print("❌ Error leyendo DB:", e)
@@ -238,9 +244,9 @@ def get_topics():
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT topic, COUNT(*) 
-                FROM webhooks 
-                GROUP BY topic 
+                SELECT topic, COUNT(*)
+                FROM webhooks
+                GROUP BY topic
                 ORDER BY COUNT(*) DESC
             """)
             topics = [{"topic": row[0], "count": row[1]} for row in cur.fetchall()]

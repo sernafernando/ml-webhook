@@ -3,13 +3,16 @@ import './App.css';
 import { FaMoon, FaSun } from 'react-icons/fa';
 
 function App() {
-  const [webhooks, setWebhooks] = useState({});
   const [theme, setTheme] = useState('dark');
-  const [selectedTopic, setSelectedTopic] = useState('');
   const [filter, setFilter] = useState('');
   const [limit, setLimit] = useState(500);
   const [offset, setOffset] = useState(0);
+  const [topics, setTopics] = useState([]);
+  const [selectedTopic, setSelectedTopic] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [pagination, setPagination] = useState({ limit: 500, offset: 0, total: 0 });
 
+  // tema
   useEffect(() => {
     const savedTheme = localStorage.getItem('theme') || 'dark';
     setTheme(savedTheme);
@@ -20,34 +23,49 @@ function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
+  // cargar topics
   useEffect(() => {
-    const fetchWebhooks = async () => {
+    const fetchTopics = async () => {
       try {
-        const res = await fetch(`/api/webhooks?limit=${limit}&offset=${offset}`);
+        const res = await fetch("/api/webhooks/topics");
         const data = await res.json();
-        setWebhooks(data);
-
-        // si todavía no hay topic seleccionado, agarrar el primero
-        if (!selectedTopic && Object.keys(data).length > 0) {
-          setSelectedTopic(Object.keys(data)[0]);
+        setTopics(data);
+        if (!selectedTopic && data.length > 0) {
+          setSelectedTopic(data[0].topic);
         }
       } catch (err) {
-        console.error("Error al cargar webhooks:", err);
+        console.error("Error al cargar topics:", err);
+      }
+    };
+    fetchTopics();
+  }, []);
+
+  // cargar eventos del topic seleccionado
+  useEffect(() => {
+    if (!selectedTopic) return;
+
+    const fetchEvents = async () => {
+      try {
+        const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
+        const data = await res.json();
+        setEvents(data.events || []);
+        setPagination(data.pagination || { limit, offset, total: 0 });
+      } catch (err) {
+        console.error("Error al cargar eventos:", err);
       }
     };
 
-    fetchWebhooks();
-    const interval = setInterval(fetchWebhooks, 5000);
+    fetchEvents();
+    const interval = setInterval(fetchEvents, 5000);
     return () => clearInterval(interval);
-  }, [limit, offset]); 
+  }, [selectedTopic, limit, offset]);
 
   const toggleTheme = () => {
     setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
   };
 
-  const topics = Object.keys(webhooks);
-  const eventos = webhooks[selectedTopic] || [];
-  const eventosFiltrados = eventos.filter(
+  // filtro por resource
+  const eventosFiltrados = events.filter(
     evt => filter === '' || (evt.resource && evt.resource.includes(filter))
   );
 
@@ -60,12 +78,15 @@ function App() {
         <div style={{ marginBottom: '1rem' }}>
           <label style={{ marginRight: '1rem' }}>Topic:</label>
           <select
-            value={selectedTopic}
-            onChange={e => setSelectedTopic(e.target.value)}
+            value={selectedTopic || ""}
+            onChange={e => { 
+              setSelectedTopic(e.target.value); 
+              setOffset(0); 
+            }}
           >
             {topics.map(t => (
-              <option key={t} value={t}>
-                {t} ({webhooks[t].length})
+              <option key={t.topic} value={t.topic}>
+                {t.topic} ({t.count})
               </option>
             ))}
           </select>
@@ -97,7 +118,7 @@ function App() {
             <tbody>
               {eventosFiltrados.map((evt, i) => (
                 <tr key={i}>
-                  <td>{i + 1}</td>
+                  <td>{i + 1 + pagination.offset}</td>
                   <td>{evt.user_id}</td>
                   <td>{evt.resource}</td>
                   <td>
@@ -121,21 +142,38 @@ function App() {
               ))}
             </tbody>
           </table>
+
+          {/* controles de paginación */}
+          <div className="controls">
+            <label>
+              Ver últimos:
+              <select value={limit} onChange={e => { setOffset(0); setLimit(Number(e.target.value)); }}>
+                <option value={100}>100</option>
+                <option value={500}>500</option>
+                <option value={1000}>1000</option>
+                <option value={5000}>5000</option>
+              </select>
+            </label>
+            <button 
+              disabled={offset === 0} 
+              onClick={() => setOffset(Math.max(0, offset - limit))}
+            >
+              ⬅️ Anterior
+            </button>
+            <button 
+              disabled={offset + limit >= pagination.total} 
+              onClick={() => setOffset(offset + limit)}
+            >
+              ➡️ Siguiente
+            </button>
+            <span style={{ marginLeft: '1rem' }}>
+              Mostrando {pagination.offset + 1} - {Math.min(pagination.offset + limit, pagination.total)} 
+              de {pagination.total}
+            </span>
+          </div>
         </section>
       )}
-      <div className="controls">
-        <label>
-          Ver últimos:
-          <select value={limit} onChange={e => { setOffset(0); setLimit(Number(e.target.value)); }}>
-            <option value={100}>100</option>
-            <option value={500}>500</option>
-            <option value={1000}>1000</option>
-            <option value={5000}>5000</option>
-          </select>
-        </label>
-        <button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))}>⬅️ Anterior</button>
-        <button onClick={() => setOffset(offset + limit)}>➡️ Siguiente</button>
-      </div>
+
       <button className="theme-floating-button" onClick={toggleTheme}>
         {theme === 'dark' ? <FaSun /> : <FaMoon />}
       </button>

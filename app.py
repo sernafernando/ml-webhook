@@ -5,6 +5,11 @@ import json
 from dotenv import load_dotenv
 from datetime import datetime
 import time
+import psycopg2
+from psycopg2.extras import Json
+
+conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+conn.autocommit = True
 
 load_dotenv()
 
@@ -121,14 +126,19 @@ def webhook():
 
         print("📩 Webhook recibido:", json.dumps(evento, indent=2))
 
-        with open("last_webhook.json", "w") as f:
-            json.dump(evento, f, indent=2)
-
-        os.makedirs("webhooks", exist_ok=True)
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"webhooks/webhook_{timestamp}.json"
-        with open(filename, "w") as f:
-            json.dump(evento, f, indent=2)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO webhooks (topic, user_id, resource, payload)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    evento.get("topic"),
+                    evento.get("user_id"),
+                    evento.get("resource"),
+                    Json(evento),
+                ),
+            )
 
         return "Evento recibido", 200
 
@@ -138,23 +148,14 @@ def webhook():
 
 @app.route("/api/webhooks", methods=["GET"])
 def get_webhooks():
-    webhooks_dir = os.path.join(os.path.dirname(__file__), "webhooks")
     events_by_topic = {}
-
-    if not os.path.exists(webhooks_dir):
-        return jsonify(events_by_topic)
-
-    for fname in sorted(os.listdir(webhooks_dir)):
-        if fname.endswith(".json"):
-            fpath = os.path.join(webhooks_dir, fname)
-            try:
-                with open(fpath) as f:
-                    data = json.load(f)
-                    topic = data.get("topic", "otros")
-                    events_by_topic.setdefault(topic, []).append(data)
-            except Exception as e:
-                print("❌ Error leyendo", fname, ":", e)
-
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT topic, payload FROM webhooks ORDER BY received_at DESC LIMIT 500")
+            for topic, payload in cur.fetchall():
+                events_by_topic.setdefault(topic, []).append(payload)
+    except Exception as e:
+        print("❌ Error leyendo DB:", e)
     return jsonify(events_by_topic)
 
 @app.route("/api/ml")

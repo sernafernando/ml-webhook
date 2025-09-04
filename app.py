@@ -288,6 +288,8 @@ def render_meli_resource():
             current_price = data.get("current_price")
             winner_price = data.get("winner", {}).get("price")
             status = data.get("status")
+            competitors_sharing = data.get("competitors_sharing_first_place")
+            competitors_label = "Competidor" if competitors_sharing == 1 else "Competidores"
 
             if item_id and catalog_product_id:
                 ml_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{item_id}"
@@ -333,7 +335,7 @@ def render_meli_resource():
                 html_parts.append(f"<div class='alert alert-danger' role='alert'>🚫 Estás perdiendo el catálogo por ${current_price - winner_price}</div>")
             
             if status == "sharing_first_place":
-                html_parts.append(f"<div class='alert alert-warning' role='alert'>⚠️ Estás compartiendo el primer lugar.</div>")
+                html_parts.append(f"<div class='alert alert-warning' role='alert'>⚠️ Estás compartiendo el primer lugar con {competitors_sharing} {competitors_label}.</div>")
 
         # siempre renderizar tabla del JSON
         html_parts.append(render_json_as_html(data))

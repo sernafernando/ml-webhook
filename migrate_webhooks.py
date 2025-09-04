@@ -10,6 +10,20 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 WEBHOOKS_DIR = os.path.join(os.path.dirname(__file__), "webhooks")
 
+def load_json_tolerant(path):
+    with open(path) as f:
+        text = f.read().strip()
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            # intentar recortar hasta el último "}"
+            if "Extra data" in str(e):
+                cut = text.rfind("}")
+                if cut != -1:
+                    return json.loads(text[:cut+1])
+            raise e
+
+
 def migrate():
     conn = psycopg2.connect(DATABASE_URL)
     conn.autocommit = True
@@ -20,8 +34,8 @@ def migrate():
         if fname.endswith(".json"):
             path = os.path.join(WEBHOOKS_DIR, fname)
             try:
-                with open(path) as f:
-                    data = json.load(f)
+                data = load_json_tolerant(path)
+
 
                 topic = data.get("topic", "otros")
                 user_id = data.get("user_id")

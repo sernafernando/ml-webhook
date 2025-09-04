@@ -149,28 +149,33 @@ def webhook():
 @app.route("/api/webhooks", methods=["GET"])
 def get_webhooks():
     try:
-        limit = int(request.args.get("limit", 500))   # default 500
-        offset = int(request.args.get("offset", 0))   # default 0
+        topic = request.args.get("topic")
+        limit = int(request.args.get("limit", 500))
+        offset = int(request.args.get("offset", 0))
 
-        events_by_topic = {}
+        if not topic:
+            return jsonify({"error": "Falta parámetro 'topic'"}), 400
+
+        rows = []
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT topic, payload
+                SELECT payload
                 FROM webhooks
+                WHERE topic = %s
                 ORDER BY received_at DESC
                 LIMIT %s OFFSET %s
                 """,
-                (limit, offset)
+                (topic, limit, offset),
             )
-            for topic, payload in cur.fetchall():
-                events_by_topic.setdefault(topic, []).append(payload)
+            rows = [r[0] for r in cur.fetchall()]
 
-        return jsonify(events_by_topic)
+        return jsonify({"topic": topic, "events": rows})
 
     except Exception as e:
         print("❌ Error leyendo DB:", e)
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/ml/render")
 def render_meli_resource():
@@ -192,14 +197,20 @@ def render_meli_resource():
         if "/price_to_win" in resource:
             item_id = data.get("item_id")
             catalog_product_id = data.get("catalog_product_id")
+            winner_id = data.get("winner", {}).get("item_id")
 
             if item_id and catalog_product_id:
                 ml_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{item_id}"
                 html_parts.append(
                     f"<h3>Vista de MercadoLibre</h3>"
-                    f"<iframe src='{ml_url}' width='100%' height='600' style='border:1px solid #444;border-radius:8px;'></iframe>"
+                    f"<iframe src='{ml_url}' width='100%' height='600' style='border:1px solid #444;border-radius:8px;'></iframe>"                    
                 )
-
+            
+            if item_id == winner_id:
+                html_parts.append(
+                    f"<br>"
+                    f"<h3>🎉 ¡Estás Ganando el Catálogo!</h3>"
+                )   
         # siempre renderizar tabla del JSON
         html_parts.append(render_json_as_html(data))
 
@@ -213,16 +224,20 @@ def render_meli_resource():
 @app.route("/api/webhooks/topics", methods=["GET"])
 def get_topics():
     try:
-        topics = []
         with conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT topic FROM webhooks ORDER BY topic")
-            topics = [row[0] for row in cur.fetchall()]
+            cur.execute("""
+                SELECT topic, COUNT(*) 
+                FROM webhooks 
+                GROUP BY topic 
+                ORDER BY COUNT(*) DESC
+            """)
+            topics = [{"topic": row[0], "count": row[1]} for row in cur.fetchall()]
         return jsonify(topics)
     except Exception as e:
         print("❌ Error obteniendo topics:", e)
         return jsonify({"error": str(e)}), 500
     
-    
+
 # frontend
 @app.route("/")
 def index():

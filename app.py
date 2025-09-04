@@ -91,29 +91,25 @@ def fetch_and_store_preview(resource):
         # Caso especial: /price_to_win
         # -------------------------------
         if resource.endswith("/price_to_win"):
-            base_resource = resource.replace("/price_to_win", "")
-            item_id = base_resource.split("/")[-1]
+            item_id = resource.split("/")[2]  # /items/MLAxxxxxx/price_to_win
+            # 1. fetch /items para título + foto
+            res_item = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=headers)
+            item_data = res_item.json()
 
-            # Consulta /items/{id}
-            item_res = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=headers)
-            item_data = item_res.json()
-
-            # Consulta /items/{id}/price_to_win
-            ptw_res = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
-            ptw_data = ptw_res.json()
+            # 2. fetch /items/{id}/price_to_win para status + winner + price
+            res_ptw = requests.get(f"https://api.mercadolibre.com/items/{item_id}/price_to_win", headers=headers)
+            ptw_data = res_ptw.json()
 
             preview = {
                 "resource": resource,
                 "title": item_data.get("title", ""),
                 "thumbnail": item_data.get("thumbnail", ""),
+                "price": ptw_data.get("current_price"),
                 "currency_id": item_data.get("currency_id", ""),
-                "price": ptw_data.get("current_price") or ptw_data.get("price"),
                 "status": ptw_data.get("status"),
-                "winner": (ptw_data.get("winner") or {}).get("item_id"),
-                "winner_price": (ptw_data.get("winner") or {}).get("price"),
-                "extra": {"messages": []}
+                "winner": ptw_data.get("winner", {}).get("item_id"),
+                "winner_price": ptw_data.get("winner", {}).get("price"),
             }
-
             # Generar mensajes extra
             if preview["winner"] and preview["winner"] == item_id:
                 preview["extra"]["messages"].append("🎉 Estás Ganando el Catálogo")

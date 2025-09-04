@@ -24,6 +24,8 @@ ML_REFRESH_TOKEN = os.getenv("ML_REFRESH_TOKEN")
 ACCESS_TOKEN = None
 EXPIRATION = 0
 
+FAVICON_DIR = "/frontend/public/white-g.png"
+
 def refresh_token():
     global ACCESS_TOKEN, EXPIRATION
 
@@ -380,8 +382,8 @@ def render_meli_resource():
             <meta charset="utf-8">
             <title>Consultas ML API</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-            <link rel="icon" href="/public/white-g.png">
-            <link rel="apple-touch-icon" href="/public/white-g.png">
+            <link rel="icon" href={FAVICON_DIR}>
+            <link rel="apple-touch-icon" href={FAVICON_DIR}>
           </head>
           <body class="bg-dark text-light p-3" data-bs-theme="dark">
             {body}
@@ -455,8 +457,8 @@ def consulta():
         <head>
             <title>Consultas ML API</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-            <link rel="icon" href="/public/white-g.png">
-            <link rel="apple-touch-icon" href="/public/white-g.png">
+            <link rel="icon" href={FAVICON_DIR}>
+            <link rel="apple-touch-icon" href={FAVICON_DIR}>
         </head>
         <body class="bg-dark text-light p-3" data-bs-theme="dark">
             <div class="container">

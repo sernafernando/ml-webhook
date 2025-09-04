@@ -44,6 +44,10 @@ def migrate():
                     continue
 
                 for data in objects:
+                    if not isinstance(data, dict):
+                        print(f"⚠️ Saltando fragmento no-dict en {fname}: {type(data).__name__}")
+                        continue
+
                     topic = data.get("topic", "otros")
                     user_id = data.get("user_id")
                     resource = data.get("resource")

@@ -52,9 +52,8 @@ function App() {
 
   // cargar eventos del topic seleccionado
   useEffect(() => {
-    if (!selectedTopic) return;
-
     const fetchEvents = async () => {
+      if (!selectedTopic) return;
       try {
         const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
         const data = await res.json();
@@ -166,7 +165,11 @@ function App() {
                             className="btn btn-sm btn-outline-info ms-2"
                             onClick={async () => {
                               await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
-                              // fetchWebhooks();
+                              // después de refrescar en el backend, recargamos la lista
+                              const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
+                              const data = await res.json();
+                              setEvents(data.events || []);
+                              setPagination(data.pagination || { limit, offset, total: 0 });
                             }}
                           >
                             🔄 Refrescar

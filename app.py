@@ -257,20 +257,25 @@ def render_meli_resource():
                     price, currency, thumbnail = "—", "", ""
 
                 html_parts.append(
-                    f"<h3>Vista de MercadoLibre</h3>"
-                    f"<a href='{ml_url}' target='_blank' rel='noopener noreferrer' "
-                    f"style='text-decoration:none;color:inherit;'>"
-                    f"<div style='border:1px solid #444;border-radius:8px;padding:10px;"
-                    f"margin:10px 0;display:flex;align-items:center;gap:10px;background:#222;'>"
-                    f"<img src='{thumbnail}' alt='{title}' "
-                    f"style='width:80px;height:80px;object-fit:cover;border-radius:6px;' />"
-                    f"<div>"
-                    f"<p style='margin:0;font-weight:bold;'>{title}</p>"
-                    f"<p style='margin:0;'>{currency} {price}</p>"
-                    f"<small>Click para ver en Mercado Libre</small>"
-                    f"</div>"
-                    f"</div>"
-                    f"</a>"
+                    f"""
+                    <h3>Vista de MercadoLibre</h3>
+                    <a href="{ml_url}" target="_blank" rel="noopener noreferrer" class="text-decoration-none text-reset">
+                    <div class="card mb-3 bg-dark text-light border-secondary" style="max-width: 540px;">
+                        <div class="row g-0">
+                        <div class="col-md-4 d-flex align-items-center justify-content-center p-2">
+                            <img src="{thumbnail}" alt="{title}" class="img-fluid rounded-start" style="max-height: 100px; object-fit: cover;" />
+                        </div>
+                        <div class="col-md-8">
+                            <div class="card-body">
+                            <h5 class="card-title">{title}</h5>
+                            <p class="card-text">{currency} {price}</p>
+                            <p class="card-text"><small class="text-muted">Click para ver en Mercado Libre</small></p>
+                            </div>
+                        </div>
+                        </div>
+                    </div>
+                    </a>
+                    """
                 )
             
             if item_id == winner_id:

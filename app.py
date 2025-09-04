@@ -113,6 +113,84 @@ def fetch_and_store_preview(resource):
     except Exception as e:
         print(f"❌ Error obteniendo preview de {resource}:", e)
         return {"resource": resource, "title": "Error", "price": None, "currency_id": "", "thumbnail": ""}
+    
+def render_ml_view(resource, data):
+    """
+    Renderiza el resultado de un recurso de Mercado Libre.
+    - Aplica lógicas especiales si corresponde (/price_to_win, etc.)
+    - Siempre devuelve HTML listo para incrustar
+    """
+    html_parts = []
+
+    # Caso especial: price_to_win
+    if "/price_to_win" in resource:
+        item_id = data.get("item_id")
+        catalog_product_id = data.get("catalog_product_id")
+        winner = data.get("winner", {}) or {}
+        winner_id = winner.get("item_id")
+        current_price = data.get("current_price")
+        winner_price = winner.get("price")
+        status = data.get("status")
+        competitors_sharing = data.get("competitors_sharing_first_place", 0)
+        competitors_label = "Competidor" if competitors_sharing == 1 else "Competidores"
+
+        if item_id and catalog_product_id:
+            ml_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{item_id}"
+            try:
+                token = get_token()
+                ml_res = requests.get(
+                    f"https://api.mercadolibre.com/items/{item_id}",
+                    headers={"Authorization": f"Bearer {token}"}
+                )
+                ml_data = ml_res.json()
+                title = ml_data.get("title", f"Item {item_id}")
+                price = ml_data.get("price", "—")
+                currency = ml_data.get("currency_id", "")
+                thumbnail = ml_data.get("thumbnail", "")
+            except Exception:
+                title, price, currency, thumbnail = f"Item {item_id}", "—", "", ""
+
+            html_parts.append(
+                f"""
+                <h3>Producto:</h3>
+                <a href="{ml_url}" target="_blank" rel="noopener noreferrer" class="text-decoration-none text-reset">
+                  <div class="card mb-3 bg-dark text-light border-secondary" style="max-width: 540px;">
+                    <div class="row g-0">
+                      <div class="col-md-4 d-flex align-items-center justify-content-center p-2">
+                        <img src="{thumbnail}" alt="{title}" class="img-fluid rounded-start" style="max-height: 100px; object-fit: cover;" />
+                      </div>
+                      <div class="col-md-8">
+                        <div class="card-body">
+                          <h5 class="card-title">{title}</h5>
+                          <p class="card-text">{currency} {price}</p>
+                          <p class="card-text"><small class="text-muted">Click para ver en Mercado Libre</small></p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </a>
+                """
+            )
+
+        if item_id == winner_id:
+            html_parts.append("<div class='alert alert-success' role='alert'>🎉 Estás Ganando el Catálogo!</div>")
+
+        if current_price and winner_price and current_price > winner_price:
+            diff = current_price - winner_price
+            html_parts.append(f"<div class='alert alert-danger' role='alert'>🚫 Estás perdiendo el catálogo por ${diff}</div>")
+
+        if status == "sharing_first_place":
+            html_parts.append(f"<div class='alert alert-warning' role='alert'>⚠️ Estás compartiendo el primer lugar con {competitors_sharing} {competitors_label}.</div>")
+
+    # 🔹 En el futuro, podés ir metiendo más casos especiales:
+    # if resource.startswith("/orders/"): ...
+    # if resource.startswith("/shipments/"): ...
+    # etc.
+
+    # Siempre renderizar tabla del JSON
+    html_parts.append(render_json_as_html(data))
+
+    return "".join(html_parts)    
 
 @app.route("/auth")
 def auth():
@@ -271,90 +349,31 @@ def render_meli_resource():
         return "Falta el parámetro 'resource'", 400
 
     try:
-        access_token = get_token()
-        response = requests.get(
+        token = get_token()
+        res = requests.get(
             f"https://api.mercadolibre.com{resource}",
-            headers={"Authorization": f"Bearer {access_token}"}
+            headers={"Authorization": f"Bearer {token}"}
         )
-        data = response.json()
+        data = res.json()
 
-        html_parts = []
+        body = render_ml_view(resource, data)
 
-        # Caso especial: price_to_win
-        if "/price_to_win" in resource:
-            item_id = data.get("item_id")
-            catalog_product_id = data.get("catalog_product_id")
-            winner_id = data.get("winner", {}).get("item_id")
-            current_price = data.get("current_price")
-            winner_price = data.get("winner", {}).get("price")
-            status = data.get("status")
-            competitors_sharing = data.get("competitors_sharing_first_place")
-            competitors_label = "Competidor" if competitors_sharing == 1 else "Competidores"
-
-            if item_id and catalog_product_id:
-                ml_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{item_id}"
-                try:
-                    access_token = get_token()
-                    ml_res = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers={"Authorization": f"Bearer {access_token}"})
-                    ml_data = ml_res.json()
-
-                    title = ml_data.get("title", f"Item {item_id}")
-                    price = ml_data.get("price", "—")
-                    currency = ml_data.get("currency_id", "")
-                    thumbnail = ml_data.get("thumbnail", "")
-                except Exception as e:
-                    title = f"Item {item_id}"
-                    price, currency, thumbnail = "—", "", ""
-
-                html_parts.append(
-                    f"""
-                    <h3>Producto:</h3>
-                    <a href="{ml_url}" target="_blank" rel="noopener noreferrer" class="text-decoration-none text-reset">
-                    <div class="card mb-3 bg-dark text-light border-secondary" style="max-width: 540px;">
-                        <div class="row g-0">
-                        <div class="col-md-4 d-flex align-items-center justify-content-center p-2">
-                            <img src="{thumbnail}" alt="{title}" class="img-fluid rounded-start" style="max-height: 100px; object-fit: cover;" />
-                        </div>
-                        <div class="col-md-8">
-                            <div class="card-body">
-                            <h5 class="card-title">{title}</h5>
-                            <p class="card-text">{currency} {price}</p>
-                            <p class="card-text"><small class="text-muted">Click para ver en Mercado Libre</small></p>
-                            </div>
-                        </div>
-                        </div>
-                    </div>
-                    </a>
-                    """
-                )
-            
-            if item_id == winner_id:
-                html_parts.append(f"<div class='alert alert-success' role='alert'>🎉 Estás Ganando el Catálogo!</div>")
-            
-            if current_price > winner_price:
-                html_parts.append(f"<div class='alert alert-danger' role='alert'>🚫 Estás perdiendo el catálogo por ${current_price - winner_price}</div>")
-            
-            if status == "sharing_first_place":
-                html_parts.append(f"<div class='alert alert-warning' role='alert'>⚠️ Estás compartiendo el primer lugar con {competitors_sharing} {competitors_label}.</div>")
-
-        # siempre renderizar tabla del JSON
-        html_parts.append(render_json_as_html(data))
-
-        final_html = """
+        final_html = f"""
         <html>
-            <head>
-                <meta charset="utf-8">
-                <title>ML Webhook Viewer</title>
-                <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-            </head>
-            <body class="bg-dark text-light p-3" data-bs-theme="dark">
-        """
-        final_html += "".join(html_parts)
-        final_html += """
-            </body>
+          <head>
+            <meta charset="utf-8">
+            <title>ML Webhook Viewer</title>
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+          </head>
+          <body class="bg-dark text-light p-3" data-bs-theme="dark">
+            {body}
+          </body>
         </html>
         """
         return final_html, 200
+    except Exception as e:
+        print("❌ Error en renderizado:", e)
+        return "Error interno en renderizado", 500
 
     except Exception as e:
         print("❌ Error en renderizado:", e)
@@ -439,7 +458,7 @@ def consulta():
 
     if data:
         html_parts.append("<h4>Resultado</h4>")
-        html_parts.append(render_json_as_html(data))
+        html_parts.append(render_ml_view(resource, data))
 
     html_parts.append("""
             </div>

@@ -382,41 +382,44 @@ def get_webhooks():
         limit = int(request.args.get("limit", 500))
         offset = int(request.args.get("offset", 0))
 
-        # total de registros del topic
+        # total de registros únicos por webhook_id
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM webhooks WHERE topic = %s", (topic,))
+            cur.execute("""
+                SELECT COUNT(DISTINCT webhook_id)
+                FROM webhooks
+                WHERE topic = %s
+            """, (topic,))
             total = cur.fetchone()[0]
 
         rows = []
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT w.payload, 
-                    p.title, p.price, p.currency_id, p.thumbnail,
-                    p.status, p.winner, p.winner_price
+                SELECT DISTINCT ON (w.webhook_id)
+                       w.payload,
+                       p.title,
+                       p.price,
+                       p.currency_id,
+                       p.thumbnail
                 FROM webhooks w
                 LEFT JOIN ml_previews p ON w.resource = p.resource
                 WHERE w.topic = %s
-                ORDER BY w.received_at DESC
+                ORDER BY w.webhook_id, w.received_at DESC
                 LIMIT %s OFFSET %s
                 """,
                 (topic, limit, offset),
             )
-            for payload, title, price, currency_id, thumbnail, status, winner, winner_price in cur.fetchall():
+            for payload, title, price, currency_id, thumbnail in cur.fetchall():
                 if isinstance(payload, str):
                     payload = json.loads(payload)
 
                 resource = payload.get("resource", "")
-
                 if resource.startswith("/items/MLA"):
                     payload["preview"] = {
                         "title": title,
                         "price": price,
                         "currency_id": currency_id,
                         "thumbnail": thumbnail,
-                        "status": status,
-                        "winner": winner,
-                        "winner_price": winner_price,
                     }
                 else:
                     payload["preview"] = None

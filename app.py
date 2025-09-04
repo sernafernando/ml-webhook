@@ -457,7 +457,6 @@ def consulta():
         html_parts.append(f"<div class='alert alert-danger'>❌ Error: {error}</div>")
 
     if data:
-        html_parts.append("<h4>Resultado</h4>")
         html_parts.append(render_ml_view(resource, data))
 
     html_parts.append("""

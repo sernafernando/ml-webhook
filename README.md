@@ -31,7 +31,7 @@ Crear y activar entorno virtual:
 
 Instalar dependencias:
 
-pip install -r requirements.txt
+    pip install -r requirements.txt
 
 Variables de entorno en un archivo `.env`:
 

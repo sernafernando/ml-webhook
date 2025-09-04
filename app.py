@@ -220,7 +220,8 @@ def render_meli_resource():
             if item_id and catalog_product_id:
                 ml_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{item_id}"
                 try:
-                    ml_res = requests.get(f"https://api.mercadolibre.com/items/{item_id}")
+                    access_token = get_token()
+                    ml_res = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers={"Authorization": f"Bearer {access_token}"})
                     ml_data = ml_res.json()
 
                     title = ml_data.get("title", f"Item {item_id}")
@@ -279,7 +280,6 @@ def get_topics():
         print("❌ Error obteniendo topics:", e)
         return jsonify({"error": str(e)}), 500
     
-
 # frontend
 @app.route("/")
 def index():

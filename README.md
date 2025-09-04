@@ -18,34 +18,33 @@ Incluye un backend en **Flask** (Python) y un frontend en **React (Vite)** con s
 
 ### 1. Clonar el repo
 
-    <pre>```git clone https://github.com/tuusuario/ml-webhook.git
-    cd ml-webhook```</pre>
+    git clone https://github.com/tuusuario/ml-webhook.git
+    cd ml-webhook
 
 ### 2. Backend (Flask)
 
-<pre>```Crear y activar entorno virtual:
+Crear y activar entorno virtual:
 
     python -m venv .venv
     source .venv/bin/activate   # Linux/Mac
-    .venv\Scripts\activate      # Windows ```</pre>
+    .venv\Scripts\activate      # Windows 
 
 Instalar dependencias:
 
-<pre>```pip install -r requirements.txt```</Pre>
+pip install -r requirements.txt
 
 Variables de entorno en un archivo `.env`:
 
-<pre>```
+
     ML_CLIENT_ID=tu_client_id
     ML_CLIENT_SECRET=tu_client_secret
     ML_REDIRECT_URI=https://tuservidor.com/callback
     ML_REFRESH_TOKEN=tu_refresh_token
     PORT=3000
-```</pre>
+
 Ejecutar backend:
 
-<pre>```    python app.py```</pre>
-
+    python app.py
 Por defecto corre en: [http://localhost:3000](http://localhost:3000)
 
 ---
@@ -54,18 +53,18 @@ Por defecto corre en: [http://localhost:3000](http://localhost:3000)
 
 Ir a la carpeta `frontend`:
 
-<pre>```    cd frontend
-    npm install   # o pnpm install```</pre>
+    cd frontend
+    npm install   # o pnpm install
 
 Correr en modo dev:
 
-<pre>```    npm run dev```</pre>
+    npm run dev
 
 El frontend queda en [http://localhost:5173](http://localhost:5173) y se conecta al backend.
 
 Para compilar versión productiva:
 
-<pre>```    npm run build```</pre>
+    npm run build
 
 Los archivos compilados se sirven desde `frontend/dist/` por el backend Flask.
 

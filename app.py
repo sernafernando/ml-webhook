@@ -60,25 +60,25 @@ def render_json_as_html(data):
         for k, v in data.items():
             rows.append(
                 f"<tr>"
-                f"<th style='text-align:left;padding:6px;border:1px solid #444;background:#222;color:#0ff'>{k}</th>"
-                f"<td style='padding:6px;border:1px solid #444'>{render_json_as_html(v)}</td>"
+                f"<th scope='row' class='table-secondary'>{k}</th>"
+                f"<td>{render_json_as_html(v)}</td>"
                 f"</tr>"
             )
-        return "<table style='border-collapse:collapse;font-family:sans-serif;font-size:14px;margin:10px 0;width:100%'>" + "".join(rows) + "</table>"
+        return "<table class='table table-dark table-bordered table-sm table-hover'>" + "".join(rows) + "</table>"
 
     elif isinstance(data, list):
         rows = []
         for i, item in enumerate(data):
             rows.append(
                 f"<tr>"
-                f"<th style='text-align:left;padding:6px;border:1px solid #444;background:#333;color:#0ff'>[{i}]</th>"
-                f"<td style='padding:6px;border:1px solid #444'>{render_json_as_html(item)}</td>"
+                f"<th scope='row' class='table-secondary'>[{i}]</th>"
+                f"<td>{render_json_as_html(item)}</td>"
                 f"</tr>"
             )
-        return "<table style='border-collapse:collapse;font-family:sans-serif;font-size:14px;margin:10px 0;width:100%'>" + "".join(rows) + "</table>"
+        return "<table class='table table-dark table-bordered table-sm table-hover'>" + "".join(rows) + "</table>"
 
     else:
-        return f"<span style='color:#eee'>{str(data)}</span>"
+        return f"<span class='text-light'>{str(data)}</span>"
 
 
 @app.route("/auth")

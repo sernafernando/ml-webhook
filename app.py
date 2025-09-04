@@ -24,7 +24,7 @@ ML_REFRESH_TOKEN = os.getenv("ML_REFRESH_TOKEN")
 ACCESS_TOKEN = None
 EXPIRATION = 0
 
-FAVICON_DIR = "/frontend/public/white-g.png"
+FAVICON_DIR = "https://ml-webhook.gaussonline.com.ar/assets/white-g-BfxDaKwI.png"
 
 def refresh_token():
     global ACCESS_TOKEN, EXPIRATION

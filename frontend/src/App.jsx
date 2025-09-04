@@ -8,7 +8,9 @@ function App() {
   const [limit, setLimit] = useState(500);
   const [offset, setOffset] = useState(0);
   const [topics, setTopics] = useState([]);
-  const [selectedTopic, setSelectedTopic] = useState(null);
+  const [selectedTopic, setSelectedTopic] = useState(
+    localStorage.getItem("selectedTopic") || null
+  );
   const [events, setEvents] = useState([]);
   const [pagination, setPagination] = useState({ limit: 500, offset: 0, total: 0 });
 
@@ -23,6 +25,12 @@ function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
+  useEffect(() => {
+    if (selectedTopic) {
+      localStorage.setItem("selectedTopic", selectedTopic);
+    }
+  }, [selectedTopic]);
+
   // cargar topics
   useEffect(() => {
     const fetchTopics = async () => {
@@ -30,6 +38,7 @@ function App() {
         const res = await fetch("/api/webhooks/topics");
         const data = await res.json();
         setTopics(data);
+
         if (!selectedTopic && data.length > 0) {
           setSelectedTopic(data[0].topic);
         }
@@ -38,7 +47,7 @@ function App() {
       }
     };
     fetchTopics();
-  }, []);
+  }, []); // 👈 sin dependencia
 
   // cargar eventos del topic seleccionado
   useEffect(() => {

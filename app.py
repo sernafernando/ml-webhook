@@ -218,6 +218,7 @@ def render_meli_resource():
             winner_id = data.get("winner", {}).get("item_id")
 
             if item_id and catalog_product_id:
+                ml_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{item_id}"
                 try:
                     ml_res = requests.get(f"https://api.mercadolibre.com/items/{item_id}")
                     ml_data = ml_res.json()
@@ -226,26 +227,26 @@ def render_meli_resource():
                     price = ml_data.get("price", "—")
                     currency = ml_data.get("currency_id", "")
                     thumbnail = ml_data.get("thumbnail", "")
-                    permalink = ml_data.get("permalink", f"https://articulo.mercadolibre.com.ar/{item_id}")
-
-                    html_parts.append(
-                        f"<h3>Vista de MercadoLibre</h3>"
-                        f"<a href='{permalink}' target='_blank' rel='noopener noreferrer' "
-                        f"style='text-decoration:none;color:inherit;'>"
-                        f"<div style='border:1px solid #444;border-radius:8px;padding:10px;"
-                        f"margin:10px 0;display:flex;align-items:center;gap:10px;background:#222;'>"
-                        f"<img src='{thumbnail}' alt='{title}' "
-                        f"style='width:80px;height:80px;object-fit:cover;border-radius:6px;' />"
-                        f"<div>"
-                        f"<p style='margin:0;font-weight:bold;'>{title}</p>"
-                        f"<p style='margin:0;'>{currency} {price}</p>"
-                        f"<small>Click para ver en Mercado Libre</small>"
-                        f"</div>"
-                        f"</div>"
-                        f"</a>"
-                    )
                 except Exception as e:
-                    html_parts.append(f"<p style='color:red'>❌ Error consultando API ML: {e}</p>")
+                    title = f"Item {item_id}"
+                    price, currency, thumbnail = "—", "", ""
+
+                html_parts.append(
+                    f"<h3>Vista de MercadoLibre</h3>"
+                    f"<a href='{ml_url}' target='_blank' rel='noopener noreferrer' "
+                    f"style='text-decoration:none;color:inherit;'>"
+                    f"<div style='border:1px solid #444;border-radius:8px;padding:10px;"
+                    f"margin:10px 0;display:flex;align-items:center;gap:10px;background:#222;'>"
+                    f"<img src='{thumbnail}' alt='{title}' "
+                    f"style='width:80px;height:80px;object-fit:cover;border-radius:6px;' />"
+                    f"<div>"
+                    f"<p style='margin:0;font-weight:bold;'>{title}</p>"
+                    f"<p style='margin:0;'>{currency} {price}</p>"
+                    f"<small>Click para ver en Mercado Libre</small>"
+                    f"</div>"
+                    f"</div>"
+                    f"</a>"
+                )
             
             if item_id == winner_id:
                 html_parts.append(

@@ -125,9 +125,36 @@ def render_ml_view(resource, data):
     if "/price_to_win" in resource:
         item_id = data.get("item_id")
         catalog_product_id = data.get("catalog_product_id")
+        
         if not catalog_product_id:
-            # 👉 redirigís el flujo al caso items
-            resource = f"/items/{item_id}"
+            # Aviso en el HTML
+            html_parts.append(
+                "<div class='alert alert-secondary' role='alert'>"
+                "<h4>📦 Producto sin catálogo</h4>"
+                "<h5>Cargando datos del producto…</h5>"
+                "</div>"
+            )
+
+            # Hacer fallback al endpoint /items
+            try:
+                token = get_token()
+                res_item = requests.get(
+                    f"https://api.mercadolibre.com/items/{item_id}",
+                    headers={"Authorization": f"Bearer {token}"}
+                )
+                item_data = res_item.json()
+
+                permalink = item_data.get("permalink")
+                if item_id and permalink:
+                    html_parts.append(make_item_card(item_id, permalink, item_data))
+
+            except Exception as e:
+                html_parts.append(
+                    f"<div class='alert alert-danger'>❌ Error al cargar datos del item: {e}</div>"
+                )
+
+            # 👈 Muy importante: salir de acá para no seguir con la lógica de catálogo
+            return "".join(html_parts)
         winner = data.get("winner", {}) or {}
         winner_id = winner.get("item_id")
         current_price = data.get("current_price")

@@ -250,8 +250,8 @@ def render_meli_resource():
                 )
             
             if item_id == winner_id:
-                html_parts.append(f"<div class='alert alert-success' role='alert'>🎉 Operación realizada correctamente.</div>")   
-                
+                html_parts.append(f"<div class='alert alert-success' role='alert'>🎉 Estás Ganando el Catálogo!</div>")   
+
         # siempre renderizar tabla del JSON
         html_parts.append(render_json_as_html(data))
 

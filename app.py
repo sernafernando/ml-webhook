@@ -128,26 +128,26 @@ def fetch_and_store_preview(resource):
         # guardar en la tabla
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, winner, winner_price, status, last_updated)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, status, winner, winner_price, last_updated)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (resource) DO UPDATE
-                SET title=EXCLUDED.title,
-                    price=EXCLUDED.price,
-                    currency_id=EXCLUDED.currency_id,
-                    thumbnail=EXCLUDED.thumbnail,
-                    winner=EXCLUDED.winner,
-                    winner_price=EXCLUDED.winner_price,
-                    status=EXCLUDED.status,
-                    last_updated=NOW();
+                SET title = EXCLUDED.title,
+                    price = EXCLUDED.price,
+                    currency_id = EXCLUDED.currency_id,
+                    thumbnail = EXCLUDED.thumbnail,
+                    status = EXCLUDED.status,
+                    winner = EXCLUDED.winner,
+                    winner_price = EXCLUDED.winner_price,
+                    last_updated = NOW();
             """, (
                 preview["resource"],
                 preview["title"],
                 preview["price"],
                 preview["currency_id"],
                 preview["thumbnail"],
-                preview["winner"],
-                preview["winner_price"],
-                preview["status"]
+                preview.get("status"),
+                preview.get("winner"),
+                preview.get("winner_price"),
             ))
             conn.commit()
 

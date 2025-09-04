@@ -478,7 +478,7 @@ def get_topics():
 
 
 
-@app.route("/api/ml/preview")
+@app.route("/api/ml/preview", methods=["GET", "POST"])
 def ml_preview():
     resource = request.args.get("resource")
     if not resource:

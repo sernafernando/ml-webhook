@@ -141,15 +141,39 @@ function App() {
                   </td>
                   <td>
                     {evt.preview && evt.preview.title ? (
-                      <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
-                        <img src={evt.preview.thumbnail} alt={evt.preview.title} style={{width:'50px', height:'50px', objectFit:'cover'}} />
+                      <div className="d-flex align-items-center gap-2">
+                        <img 
+                          src={evt.preview.thumbnail} 
+                          alt={evt.preview.title} 
+                          style={{width:'50px', height:'50px', objectFit:'cover'}} 
+                        />
                         <div>
                           <strong>{evt.preview.title}</strong><br />
                           {evt.preview.currency_id} {evt.preview.price}
                         </div>
+                        <button
+                          className="btn btn-sm btn-outline-info ms-2"
+                          onClick={async () => {
+                            await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
+                            // fetchWebhooks();
+                          }}
+                        >
+                          🔄 Refrescar
+                        </button>
                       </div>
                     ) : (
-                      <em>-</em>
+                      <div>
+                        <em>-</em>
+                        <button
+                          className="btn btn-sm btn-outline-secondary ms-2"
+                          onClick={async () => {
+                            await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
+                            // fetchWebhooks();
+                          }}
+                        >
+                          🔄 Generar
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -185,15 +209,6 @@ function App() {
               de {pagination.total}
             </span>
           </div>
-
-          <button
-            onClick={async () => {
-              await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`);
-              // volver a cargar eventos después de refrescar
-            }}
-          >
-            🔄 Refrescar Preview
-          </button>
 
         </section>
       )}

@@ -131,11 +131,10 @@ def render_ml_view(resource, data):
             html_parts.append(
                 "<div class='alert alert-secondary' role='alert'>"
                 "<h4>📦 Producto sin catálogo</h4>"
-                "<h5>Cargando datos del producto…</h5>"
+                "<h5>Mostrando datos del Producto</h5>"
                 "</div>"
             )
 
-            # Hacer fallback al endpoint /items
             try:
                 token = get_token()
                 res_item = requests.get(
@@ -148,12 +147,15 @@ def render_ml_view(resource, data):
                 if item_id and permalink:
                     html_parts.append(make_item_card(item_id, permalink, item_data))
 
+                # 👇 Agregar también el JSON del item
+                html_parts.append(render_json_as_html(item_data))
+
             except Exception as e:
                 html_parts.append(
                     f"<div class='alert alert-danger'>❌ Error al cargar datos del item: {e}</div>"
                 )
 
-            # 👈 Muy importante: salir de acá para no seguir con la lógica de catálogo
+            # 👈 ahora SÍ cortamos acá, porque ya mostramos card + json
             return "".join(html_parts)
         winner = data.get("winner", {}) or {}
         winner_id = winner.get("item_id")

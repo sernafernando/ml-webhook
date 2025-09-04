@@ -153,7 +153,7 @@ function App() {
                       <div>
                         <div className="d-flex align-items-center gap-2">
                           <img 
-                            src={evt.preview.thumbnail} 
+                            src={evt.preview.thumbnail?.replace(/^http:\/\//i, "https://")} 
                             alt={evt.preview.title} 
                             style={{width:'50px', height:'50px', objectFit:'cover'}} 
                           />
@@ -165,7 +165,6 @@ function App() {
                             className="btn btn-sm btn-outline-info ms-2"
                             onClick={async () => {
                               await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
-                              // después de refrescar en el backend, recargamos la lista
                               const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
                               const data = await res.json();
                               setEvents(data.events || []);
@@ -192,7 +191,10 @@ function App() {
                           className="btn btn-sm btn-outline-secondary ms-2"
                           onClick={async () => {
                             await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
-                            // fetchWebhooks();
+                            const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
+                            const data = await res.json();
+                            setEvents(data.events || []);
+                            setPagination(data.pagination || { limit, offset, total: 0 });
                           }}
                         >
                           🔄 Generar

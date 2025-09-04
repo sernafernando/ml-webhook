@@ -124,6 +124,7 @@ function App() {
                 <th>resource</th>
                 <th>Raw JSON</th>
                 <th>Preview</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -137,8 +138,39 @@ function App() {
                       <summary>Ver</summary>
                       <pre>{JSON.stringify(evt, null, 2)}</pre>
                     </details>
+                  </td>
+                  <td>
+                    {evt.preview && evt.preview.title ? (
+                      <div className="d-flex align-items-center gap-2">
+                        <img
+                          src={evt.preview.thumbnail?.replace(/^http:\/\//i, "https://")}
+                          alt={evt.preview.title}
+                          style={{ width: '50px', height: '50px', objectFit: 'cover' }}
+                        />
+                        <div>
+                          <strong>{evt.preview.title}</strong><br />
+                          {evt.preview.currency_id} {evt.preview.price}
+
+                          {evt.preview.status && (
+                            <div className="mt-1">
+                              <span className="badge bg-info text-dark">{evt.preview.status}</span>
+                            </div>
+                          )}
+
+                          {evt.preview.winner && (
+                            <div className="mt-1">
+                              🏆 Ganador: {evt.preview.winner} ({evt.preview.currency_id} {evt.preview.winner_price})
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <em>-</em>
+                    )}
+                  </td>
+                  <td>
                     <button
-                      className="ml-button"
+                      className="btn btn-sm btn-outline-primary me-2"
                       onClick={() =>
                         window.open(
                           `/api/ml/render?resource=${encodeURIComponent(evt.resource)}`,
@@ -148,90 +180,56 @@ function App() {
                     >
                       Ver detalle
                     </button>
-                  </td>
-                  <td>
+
                     {evt.preview && evt.preview.title ? (
-                      <div>
-                        <div className="d-flex align-items-center gap-2">
-                          <img
-                            src={evt.preview.thumbnail?.replace(/^http:\/\//i, "https://")}
-                            alt={evt.preview.title}
-                            style={{ width: '50px', height: '50px', objectFit: 'cover' }}
-                          />
-                          <div>
-                            <strong>{evt.preview.title}</strong><br />
-                            {evt.preview.currency_id} {evt.preview.price}
-
-                            {/* Status */}
-                            {evt.preview.status && (
-                              <div className="mt-1">
-                                <span className="badge bg-info text-dark">
-                                  {evt.preview.status}
-                                </span>
-                              </div>
-                            )}
-
-                            {/* Winner */}
-                            {evt.preview.winner && (
-                              <div className="mt-1">
-                                🏆 Ganador: {evt.preview.winner} ({evt.preview.currency_id} {evt.preview.winner_price})
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Botón refrescar */}
-                          <button
-                            className="btn btn-sm btn-outline-info ms-2"
-                            onClick={async () => {
-                              setLoadingPreview(prev => ({ ...prev, [evt.resource]: true }));
-                              await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
-                              const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
-                              const data = await res.json();
-                              setEvents(data.events || []);
-                              setPagination(data.pagination || { limit, offset, total: 0 });
-                              setLoadingPreview(prev => ({ ...prev, [evt.resource]: false }));
-                            }}
-                            disabled={loadingPreview[evt.resource]}
-                          >
-                            {loadingPreview[evt.resource] ? (
-                              <span>
-                                <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                                Cargando...
-                              </span>
-                            ) : (
-                              "🔄 Refrescar"
-                            )}
-                          </button>
-                        </div>
-                      </div>
+                      <button
+                        className="btn btn-sm btn-outline-info"
+                        onClick={async () => {
+                          setLoadingPreview(prev => ({ ...prev, [evt.resource]: true }));
+                          await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
+                          const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
+                          const data = await res.json();
+                          setEvents(data.events || []);
+                          setPagination(data.pagination || { limit, offset, total: 0 });
+                          setLoadingPreview(prev => ({ ...prev, [evt.resource]: false }));
+                        }}
+                        disabled={loadingPreview[evt.resource]}
+                      >
+                        {loadingPreview[evt.resource] ? (
+                          <span>
+                            <span className="spinner-border spinner-border-sm me-1" role="status"></span>
+                            Refrescando...
+                          </span>
+                        ) : (
+                          "🔄 Refrescar"
+                        )}
+                      </button>
                     ) : (
-                      <div>
-                        <em>-</em>
-                        <button
-                          className="btn btn-sm btn-outline-secondary ms-2"
-                          onClick={async () => {
-                            setLoadingPreview(prev => ({ ...prev, [evt.resource]: true }));
-                            await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
-                            const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
-                            const data = await res.json();
-                            setEvents(data.events || []);
-                            setPagination(data.pagination || { limit, offset, total: 0 });
-                            setLoadingPreview(prev => ({ ...prev, [evt.resource]: false }));
-                          }}
-                          disabled={loadingPreview[evt.resource]}
-                        >
-                          {loadingPreview[evt.resource] ? (
-                            <span>
-                              <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                              Generando...
-                            </span>
-                          ) : (
-                            "🔄 Generar"
-                          )}
-                        </button>
-                      </div>
+                      <button
+                        className="btn btn-sm btn-outline-secondary"
+                        onClick={async () => {
+                          setLoadingPreview(prev => ({ ...prev, [evt.resource]: true }));
+                          await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
+                          const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
+                          const data = await res.json();
+                          setEvents(data.events || []);
+                          setPagination(data.pagination || { limit, offset, total: 0 });
+                          setLoadingPreview(prev => ({ ...prev, [evt.resource]: false }));
+                        }}
+                        disabled={loadingPreview[evt.resource]}
+                      >
+                        {loadingPreview[evt.resource] ? (
+                          <span>
+                            <span className="spinner-border spinner-border-sm me-1" role="status"></span>
+                            Generando...
+                          </span>
+                        ) : (
+                          "🔄 Generar"
+                        )}
+                      </button>
                     )}
                   </td>
+
                 </tr>
               ))}
             </tbody>

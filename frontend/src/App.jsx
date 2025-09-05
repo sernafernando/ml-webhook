@@ -86,6 +86,26 @@ function App() {
     evt => filter === '' || (evt.resource && evt.resource.includes(filter))
   );
 
+  const topicLabels = {
+    "items": "🛒 Publicaciones",
+    "shipments": "🚚 Envíos",
+    "orders_v2": "📦 Órdenes",
+    "price_suggestion": "💡 Sugerencias de precio",
+    "payments": "💳 Pagos",
+    "items_prices": "💲 Precios de Items",
+    "stock-locations": "🏬 Depósitos",
+    "public_offers": "📢 Ofertas públicas",
+    "public_candidates": "📝 Candidatos públicos",
+    "orders_feedback": "⭐ Feedback de órdenes",
+    "flex-handshakes": "⚡ Flex Handshakes",
+    "post_purchase": "🔄 Post-compra",
+    "messages": "✉️ Mensajes",
+    "catalog_item_competition_status": "📊 Competencia de catálogo",
+    "user-products-families": "👨‍👩‍👧 Familias de productos",
+    "questions": "❓ Preguntas",
+    "fbm_stock_operations": "📦 Operaciones FBM",
+  };
+
   const getStatusBadge = (status) => {
     const map = {
       winning: { className: "bg-success", label: "Ganando" },
@@ -117,7 +137,7 @@ function App() {
               >
                 {topics.map(t => (
                   <option key={t.topic} value={t.topic}>
-                    {t.topic} ({t.count})
+                    {topicLabels[t.topic] || t.topic} ({t.count})
                   </option>
                 ))}
               </select>
@@ -143,7 +163,7 @@ function App() {
       {/* tabla del topic seleccionado */}
       {selectedTopic && (
         <section style={{ marginBottom: '2rem' }}>
-          <h2>🔹 Topic: {selectedTopic}</h2>
+          <h2>🔹 Topic: {topicLabels[selectedTopic] || selectedTopic}</h2>
           <table className="webhook-table">
             <thead>
               <tr>

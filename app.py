@@ -370,6 +370,7 @@ def webhook():
 
         print("📩 Webhook recibido:", json.dumps(evento, indent=2))
 
+        # 1) Insert original
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -382,15 +383,14 @@ def webhook():
                     evento.get("user_id"),
                     evento.get("resource"),
                     Json(evento),
-                    evento.get("_id"),  # este viene en el payload
+                    evento.get("_id"),
                 ),
             )
 
         resource = evento.get("resource", "")
-        base_resource = None
-        if resource and resource.startswith("/items/MLA"):
-            base_resource = resource.split("/price_to_win")[0]
+        base_resource = resource.split("/price_to_win")[0] if resource and resource.startswith("/items/MLA") else None
 
+        # 2) Insert normalizado (con webhook_id -norm)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -401,21 +401,29 @@ def webhook():
                 (
                     evento.get("topic"),
                     evento.get("user_id"),
-                    base_resource or resource,   # normalizado
+                    base_resource or resource,
                     Json(evento),
-                    f"{evento.get('_id')}-norm",  # 👈 sufijo para no chocar
+                    f"{evento.get('_id')}-norm",
                 ),
             )
 
+        # 3) IMPORTANTE: no dejar que un error acá tire 500
         if base_resource:
-            fetch_and_store_preview(base_resource)
+            try:
+                print(f"🔎 fetch_and_store_preview({base_resource}) …")
+                fetch_and_store_preview(base_resource)
+                print("✅ preview actualizado")
+            except Exception as e:
+                import traceback
+                print("⚠️ fetch_and_store_preview falló, pero continúo:", e)
+                traceback.print_exc()
 
         return "Evento recibido", 200
 
     except Exception as e:
         import traceback
         print("❌ Error en webhook:", e)
-        traceback.print_exc()  # 👈 para ver el stack completo en consola
+        traceback.print_exc()
         return "Error interno", 500
 
 

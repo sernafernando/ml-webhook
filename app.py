@@ -565,8 +565,13 @@ def render_meli_resource():
 
     try:
         token = get_token()
+
+        url = f"https://api.mercadolibre.com{resource}"
+        if "/price_to_win" in resource:
+            url += ("&" if "?" in url else "?") + "version=v2"
+
         res = requests.get(
-            f"https://api.mercadolibre.com{resource}",
+            url,
             headers={"Authorization": f"Bearer {token}"}
         )
         data = res.json()

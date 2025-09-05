@@ -158,36 +158,36 @@ function App() {
                     </details>
                   </td>
                   <td>
-                    {evt.preview && evt.preview.title ? (
+                    {evt.db_preview && evt.db_preview.title ? (
                       <div className="d-flex align-items-center gap-2">
                         <img
-                          src={evt.preview.thumbnail?.replace(/^http:\/\//i, "https://")}
-                          alt={evt.preview.title}
+                          src={evt.db_preview.thumbnail?.replace(/^http:\/\//i, "https://")}
+                          alt={evt.db_preview.title}
                           style={{ width: '50px', height: '50px', objectFit: 'cover' }}
                         />
                         <div>
-                          <strong>{evt.preview.title}</strong><br />
-                          {evt.preview.currency_id} {evt.preview.price}
+                          <strong>{evt.db_preview.title}</strong><br />
+                          {evt.db_preview.currency_id} {evt.db_preview.price}
 
                           {/* ⬇️ reemplazo de tu badge actual */}
-                          {evt.preview.status && (
+                          {evt.db_preview.status && (
                             <div className="mt-1">
-                              {getStatusBadge(evt.preview.status)}
+                              {getStatusBadge(evt.db_preview.status)}
                             </div>
                           )}
 
-                          {evt.preview && evt.preview.winner ? (
+                          {evt.db_preview && evt.db_preview.winner ? (
                             <div className="ptw-line">
-                              {evt.preview.winner_url ? (
+                              {evt.db_preview.winner_url ? (
                                 <>
                                   🏆 Ganador:{" "}
-                                  <a href={evt.preview.winner_url} target="_blank" rel="noopener noreferrer">
-                                    {evt.preview.winner}
+                                  <a href={evt.db_preview.winner_url} target="_blank" rel="noopener noreferrer">
+                                    {evt.db_preview.winner}
                                   </a>{" "}
-                                  — {evt.preview.winner_price_fmt}
+                                  — {evt.db_preview.winner_price_fmt}
                                 </>
                               ) : (
-                                <>🏆 Ganador: {evt.preview.winner} — {fmtARS(evt.preview.winner_price)}</>
+                                <>🏆 Ganador: {evt.db_preview.winner} — {fmtARS(evt.db_preview.winner_price)}</>
                               )}
                             </div>
                           ) : null}
@@ -210,7 +210,7 @@ function App() {
                       Ver detalle
                     </button>
 
-                    {evt.preview && evt.preview.title ? (
+                    {evt.db_preview && evt.db_preview.title ? (
                       <button
                         className="btn btn-sm btn-outline-info"
                         onClick={async () => {

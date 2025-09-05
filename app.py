@@ -491,7 +491,7 @@ def get_webhooks():
             }
 
             # Adjuntamos preview siempre (si no hay, vendrá con None en sus campos)
-            payload["preview"] = preview
+            payload["db_preview"] = preview
             local_dt = row[8].astimezone(ZoneInfo("America/Argentina/Buenos_Aires"))
             payload["received_at"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
             rows.append(payload)

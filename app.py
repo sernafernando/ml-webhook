@@ -367,22 +367,19 @@ def callback():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        evento = request.get_json()
+        evento = request.get_json(silent=True, force=True)
         if not evento:
             return "JSON inválido o vacío", 400
 
         resource = evento.get("resource", "")
-        base_resource = resource.split("/price_to_win")[0] if resource and resource.startswith("/items/MLA") else None
-
         results = {
             "received_resource": resource,
-            "base_resource": base_resource,
             "insert_original": None,
-            "insert_norm": None,
+            "preview_refreshed": False,
             "errors": [],
         }
 
-        # INSERT 1: original (webhook_id = _id)
+        # Insert ÚNICO: exactamente el resource recibido
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -396,49 +393,33 @@ def webhook():
                         evento.get("user_id"),
                         resource,
                         Json(evento),
-                        evento.get("_id"),
+                        evento.get("_id"),  # UUID válido requerido por tu esquema
                     ),
                 )
-                results["insert_original"] = {"rowcount": cur.rowcount, "webhook_id": evento.get("_id")}
+                results["insert_original"] = {
+                    "rowcount": cur.rowcount,
+                    "webhook_id": evento.get("_id"),
+                }
         except Exception as e:
             results["errors"].append(f"insert_original: {e}")
 
-        # INSERT 2: normalizado (webhook_id = _id + '-norm')
+        # Refrescar preview del MISMO resource (no rompe el webhook si falla)
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO webhooks (topic, user_id, resource, payload, webhook_id)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (webhook_id) DO NOTHING
-                    """,
-                    (
-                        evento.get("topic"),
-                        evento.get("user_id"),
-                        base_resource or resource,
-                        Json(evento),
-                        f"{evento.get('_id')}-norm",
-                    ),
-                )
-                results["insert_norm"] = {"rowcount": cur.rowcount, "webhook_id": f"{evento.get('_id')}-norm"}
-        except Exception as e:
-            results["errors"].append(f"insert_norm: {e}")
-
-        # Refrescar preview sin quebrar el webhook
-        if base_resource:
-            try:
+            if resource:
                 fetch_and_store_preview(resource)
                 results["preview_refreshed"] = True
-            except Exception as e:
-                results["preview_refreshed"] = False
-                results["errors"].append(f"fetch_and_store_preview: {e}")
+        except Exception as e:
+            results["errors"].append(f"fetch_and_store_preview: {e}")
 
-        status = 200 if not DEBUG_WEBHOOK else 200
-        return (jsonify(results), status)
+        if DEBUG_WEBHOOK:
+            return jsonify(results), 200
+        return "Evento recibido", 200
 
     except Exception as e:
-        # fallback
-        return (jsonify({"ok": False, "fatal": str(e)}), 500)
+        # último recurso
+        if DEBUG_WEBHOOK:
+            return jsonify({"ok": False, "fatal": str(e)}), 500
+        return "Error interno", 500
 
 
 @app.route("/api/webhooks", methods=["GET"])

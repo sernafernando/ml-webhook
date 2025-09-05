@@ -7,6 +7,7 @@ from datetime import datetime
 import time
 import psycopg2
 from psycopg2.extras import Json
+from zoneinfo import ZoneInfo
 
 conn = psycopg2.connect(os.getenv("DATABASE_URL"))
 conn.autocommit = True
@@ -491,7 +492,8 @@ def get_webhooks():
 
             # Adjuntamos preview siempre (si no hay, vendrá con None en sus campos)
             payload["preview"] = preview
-            payload["received_at"] = row[8].strftime("%Y-%m-%d %H:%M:%S") if row[8] else None
+            local_dt = row[8].astimezone(ZoneInfo("America/Argentina/Buenos_Aires"))
+            payload["received_at"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
             rows.append(payload)
 
         return jsonify({

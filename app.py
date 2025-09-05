@@ -485,10 +485,7 @@ def get_webhooks():
                     "winner_price": row[6],
                     "status": row[7],
                 }
-                if payload.get("resource", "").startswith("/items/MLA"):
-                    payload["preview"] = preview
-                else:
-                    payload["preview"] = None
+                payload["preview"] = preview
 
                 rows.append(payload)
 

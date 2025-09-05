@@ -5,14 +5,14 @@ import { FaMoon, FaSun } from 'react-icons/fa';
 function App() {
   const [theme, setTheme] = useState('dark');
   const [filter, setFilter] = useState('');
-  const [limit, setLimit] = useState(500);
+  const [limit, setLimit] = useState(5000);
   const [offset, setOffset] = useState(0);
   const [topics, setTopics] = useState([]);
   const [selectedTopic, setSelectedTopic] = useState(
     localStorage.getItem("selectedTopic") || null
   );
   const [events, setEvents] = useState([]);
-  const [pagination, setPagination] = useState({ limit: 500, offset: 0, total: 0 });
+  const [pagination, setPagination] = useState({ limit: 5000, offset: 0, total: 0 });
   const [loadingPreview, setLoadingPreview] = useState({});
 
   // tema

@@ -394,14 +394,16 @@ def webhook():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO webhooks (topic, user_id, resource, payload)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO webhooks (topic, user_id, resource, payload, webhook_id)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (webhook_id) DO NOTHING
                 """,
                 (
                     evento.get("topic"),
                     evento.get("user_id"),
-                    base_resource or resource,   # 👈 guardamos normalizado
+                    base_resource or resource,   # normalizado
                     Json(evento),
+                    f"{evento.get('_id')}-norm",  # 👈 sufijo para no chocar
                 ),
             )
 
@@ -411,8 +413,11 @@ def webhook():
         return "Evento recibido", 200
 
     except Exception as e:
+        import traceback
         print("❌ Error en webhook:", e)
+        traceback.print_exc()  # 👈 para ver el stack completo en consola
         return "Error interno", 500
+
 
 @app.route("/api/webhooks", methods=["GET"])
 def get_webhooks():

@@ -70,6 +70,13 @@ function App() {
     return () => clearInterval(interval);
   }, [selectedTopic, limit, offset]);
 
+  const fmtARS = (val) => {
+    if (val === null || val === undefined || val === "") return "—";
+    const n = Number(val);
+    if (isNaN(n)) return val;
+    return "$" + n.toLocaleString("es-AR", { minimumFractionDigits: 2 });
+  };
+
   const toggleTheme = () => {
     setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
   };
@@ -82,7 +89,7 @@ function App() {
   const getStatusBadge = (status) => {
     const map = {
       winning: { className: "bg-success", label: "Ganando" },
-      sharing_first_place: { className: "bg-warning text-dark", label: "Ganando, compartiendo primer lugar" },
+      sharing_first_place: { className: "bg-warning text-dark", label: "Compartiendo primer lugar" },
       competing: { className: "bg-danger", label: "Perdiendo" },
     };
     const m = map[status] || { className: "bg-secondary", label: status };
@@ -179,7 +186,7 @@ function App() {
                                   — {evt.preview.winner_price_fmt}
                                 </>
                               ) : (
-                                <>🏆 Ganador: {evt.preview.winner} — {evt.preview.winner_price_fmt}</>
+                                <>🏆 Ganador: {evt.preview.winner} — {fmtARS(evt.preview.winner_price)}</>
                               )}
                             </div>
                           ) : null}

@@ -82,6 +82,7 @@ function App() {
   };
   
   // 👇 helper para buscar dentro de cualquier campo del preview
+  // Busca el needle en cualquier valor primitivo dentro de obj (recursivo, seguro)
   function deepIncludes(obj, needle, depth = 2, seen = new WeakSet()) {
     if (!needle) return true;
     if (obj == null) return false;
@@ -107,21 +108,98 @@ function App() {
       return false;
     }
   }
+
+  // Mapeo simple de sinónimos ES -> ML
+  const synonymMap = {
+    "perdiendo": "competing",
+    "ganando": "winning",
+    "compartiendo": "sharing_first_place",
+    "compartiendo_primer_lugar": "sharing_first_place",
+  };
+
+  // tokeniza soportando comillas, negaciones (-término) y campo:valor
+  function tokenizeQuery(q) {
+    const tokens = [];
+    if (!q) return tokens;
+    const re = /"([^"]+)"|(\S+)/g;
+    let m;
+    while ((m = re.exec(q)) !== null) {
+      const raw = (m[1] ?? m[2] ?? "").trim();
+      if (!raw) continue;
+
+      let neg = false;
+      let text = raw;
+      if (text.startsWith("-")) { neg = true; text = text.slice(1); }
+
+      let field = null;
+      let term = text;
+
+      const colonIdx = text.indexOf(":");
+      if (colonIdx > 0) {
+        field = text.slice(0, colonIdx).toLowerCase();
+        term = text.slice(colonIdx + 1);
+      }
+
+      term = term.toLowerCase();
+
+      // aplicar sinónimos (solo para términos sin campo o para campo=status)
+      const mapped = synonymMap[term];
+      if (mapped && (!field || field === "status")) term = mapped;
+
+      tokens.push({ field, term, neg });
+    }
+    return tokens;
+  }
+
+  // obtención de valor por campo conocido dentro del preview
+  function getFieldValue(pv, field) {
+    const f = field?.toLowerCase();
+    switch (f) {
+      case "brand": return pv?.brand;
+      case "status": return pv?.status;
+      case "title": return pv?.title;
+      case "winner": return pv?.winner;
+      case "price": return pv?.price;
+      case "winner_price": return pv?.winner_price;
+      case "currency": 
+      case "currency_id": return pv?.currency_id;
+      default: return undefined;
+    }
+  }
+
   // filtro por resource
-  const needle = (filter || "").trim().toLowerCase();
+  const rawQuery = (filter || "").trim();
+  const needle = rawQuery.toLowerCase();
+  const tokens = tokenizeQuery(rawQuery);
 
   const eventosFiltrados = Array.isArray(events) ? events.filter(evt => {
-    if (!needle) return true;
+    // sin query → no filtra
+    if (!needle || tokens.length === 0) return true;
 
     try {
-      const resourceHit = (evt?.resource || "").toLowerCase().includes(needle);
       const pv = evt?.db_preview ?? evt?.preview ?? {};
-      const previewHit = deepIncludes(pv, needle, 2);
+      const resourceStr = (evt?.resource || "").toLowerCase();
 
-      return resourceHit || previewHit;
+      // Para cada token, debe cumplirse (AND global):
+      return tokens.every(tok => {
+        // hit por campo específico
+        let hit = false;
+        if (tok.field) {
+          const val = getFieldValue(pv, tok.field);
+          const fieldStr = (val == null ? "" : String(val)).toLowerCase();
+          hit = fieldStr.includes(tok.term);
+        } else {
+          // hit en resource o en cualquier valor del preview
+          const resourceHit = resourceStr.includes(tok.term);
+          const previewHit = deepIncludes(pv, tok.term, 2);
+          hit = resourceHit || previewHit;
+        }
+
+        return tok.neg ? !hit : hit; // negación soportada
+      });
     } catch (e) {
       console.error("Filtro: error evaluando evento", e, evt);
-      return true; // fallback: no ocultar
+      return true; // fallback: no ocultar en caso de error
     }
   }) : [];
 

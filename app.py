@@ -284,6 +284,15 @@ def render_ml_view(resource, data):
         if item_id and ml_url:
             html_parts.append(make_item_card(item_id, ml_url, data))
 
+    if resource.startswith("/seller-promotions/"):
+        token = get_token()
+        res = requests.get(
+            f"https://api.mercadolibre.com{resource}?app_version=v2",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        promo_data = res.json()
+        return render_json_as_html(promo_data)
+
     # -------------------------------
     # Siempre: tabla JSON
     # -------------------------------

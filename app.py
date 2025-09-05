@@ -395,11 +395,16 @@ def get_webhooks():
             cur.execute(
                 """
                 SELECT DISTINCT ON (w.resource)
-                        w.payload, p.title, p.price, p.currency_id, p.thumbnail, p.status, p.winner, p.winner_price
+                        w.payload, p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status
                     FROM webhooks w
+                    JOIN (
+                        SELECT resource, MAX(received_at) AS max_received
+                        FROM webhooks
+                        WHERE topic = %s
+                        GROUP BY resource
+                    ) latest ON w.resource = latest.resource AND w.received_at = latest.max_received
                     LEFT JOIN ml_previews p ON w.resource = p.resource
-                    WHERE w.topic = %s
-                    ORDER BY w.resource, w.received_at DESC
+                    ORDER BY w.received_at DESC
                     LIMIT %s OFFSET %s
                 """,
                 (topic, limit, offset),

@@ -270,50 +270,77 @@ def render_ml_view(resource, data):
 
         def _fmt_money(val):
             try:
-                return f"{data.get('currency_id','')} {int(round(float(val))):,}".replace(",", ".")
+                # acepta str o número y lo muestra sin decimales
+                return f"{data.get('currency_id','') } {int(round(float(val))):,}".replace(",", ".")
             except Exception:
                 return val if val is not None else "—"
 
         def _render_boosts_list(boost_list):
             if not boost_list:
                 return "<em>Sin boosts</em>"
-            items = []
+            lis = []
             for b in boost_list:
                 st = (b or {}).get("status")
                 icon = "🟢" if st == "boosted" else ("⚪" if st in ("opportunity", None) else "🟠")
                 desc = (b or {}).get("description") or (b or {}).get("id") or "—"
-                items.append(f"<li class='mb-1'>{icon} {desc} <small class='text-muted'>({st or '—'})</small></li>")
-            return "<ul class='mb-0 ps-3'>" + "".join(items) + "</ul>"
+                lis.append(f"<li class='mb-1'>{icon} {desc} <small class='text-muted'>({st or '—'})</small></li>")
+            return "<ul class='mb-0 ps-3'>" + "".join(lis) + "</ul>"
 
-        # Datos resumidos
+        # Datos del propio item
         price_to_win_val = data.get("price_to_win")
+        boosts_self = data.get("boosts", [])
         visit_share = data.get("visit_share") or "—"
         consistent = data.get("consistent")
         comp_share = data.get("competitors_sharing_first_place")
         comp_share_txt = "—" if comp_share in (None, "", []) else comp_share
 
-        boosts_self = data.get("boosts", [])
-        winner_boosts = (winner or {}).get("boosts", [])
+        # Datos del ganador
+        winner_boosts = winner.get("boosts", [])
 
         html_parts.append(f"""
-          <div class="mt-3">
-            <h5 class="mb-2">📈 Detalle de competencia</h5>
-            <div class="small text-muted mb-1">
-              <strong>Price to win:</strong> {_fmt_money(price_to_win_val)} &nbsp;|&nbsp;
-              <strong>Visit share:</strong> {visit_share} &nbsp;|&nbsp;
-              <strong>Consistente:</strong> {"✅ Sí" if consistent else "❌ No"} &nbsp;|&nbsp;
-              <strong>Competidores en 1º lugar:</strong> {comp_share_txt}
-            </div>
-            <div class="mt-2">
-              <h6 class="mb-1">Boosts (tu publicación)</h6>
-              {_render_boosts_list(boosts_self)}
-            </div>
-            <div class="mt-3">
-              <h6 class="mb-1">Boosts (ganador)</h6>
-              {_render_boosts_list(winner_boosts)}
+        <div class="row g-3 mt-2">
+          <!-- Tu publicación -->
+          <div class="col-md-6">
+            <div class="card bg-dark text-light border-info h-100">
+              <div class="card-header">📦 Tu publicación</div>
+              <div class="card-body">
+                <div class="d-flex justify-content-between flex-wrap">
+                  <div><strong>Item ID:</strong> {item_id}</div>
+                  <div><strong>Estado:</strong> {status or "—"}</div>
+                </div>
+                <div class="mt-2">
+                  <div><strong>Precio actual:</strong> {_fmt_money(current_price)}</div>
+                  <div><strong>Price to win:</strong> {_fmt_money(price_to_win_val)}</div>
+                </div>
+                <div class="mt-2 d-flex justify-content-between flex-wrap">
+                  <div><strong>Consistente:</strong> {"✅ Sí" if consistent else "❌ No"}</div>
+                  <div><strong>Visit share:</strong> {visit_share}</div>
+                  <div><strong>Competidores en 1º lugar:</strong> {comp_share_txt}</div>
+                </div>
+                <hr>
+                <h6 class="mb-2">Boosts</h6>
+                {_render_boosts_list(boosts_self)}
+              </div>
             </div>
           </div>
-        """)
+
+          <!-- Ganador -->
+          <div class="col-md-6">
+            <div class="card bg-dark text-light border-success h-100">
+              <div class="card-header">🏆 Ganador</div>
+              <div class="card-body">
+                <div class="d-flex justify-content-between flex-wrap">
+                  <div><strong>Item ID:</strong> {winner_id or "—"}</div>
+                  <div><strong>Precio:</strong> {_fmt_money(winner_price)}</div>
+                </div>
+                <hr>
+                <h6 class="mb-2">Boosts</h6>
+                {_render_boosts_list(winner_boosts)}
+              </div>
+            </div>
+          </div>
+        </div>
+        """)    
 
 
 

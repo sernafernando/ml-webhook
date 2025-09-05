@@ -157,11 +157,21 @@ function App() {
                             </div>
                           )}
 
-                          {evt.preview.winner && (
-                            <div className="mt-1">
-                              🏆 Ganador: {evt.preview.winner} ({evt.preview.currency_id} {evt.preview.winner_price})
+                          {evt.preview && evt.preview.winner ? (
+                            <div className="ptw-line">
+                              {evt.preview.winner_url ? (
+                                <>
+                                  🏆 Ganador:{" "}
+                                  <a href={evt.preview.winner_url} target="_blank" rel="noopener noreferrer">
+                                    {evt.preview.winner}
+                                  </a>{" "}
+                                  — {evt.preview.winner_price_fmt}
+                                </>
+                              ) : (
+                                <>🏆 Ganador: {evt.preview.winner} — {evt.preview.winner_price_fmt}</>
+                              )}
                             </div>
-                          )}
+                          ) : null}
                         </div>
                       </div>
                     ) : (

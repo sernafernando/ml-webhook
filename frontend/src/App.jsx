@@ -138,7 +138,7 @@ function App() {
             <thead>
               <tr>
                 <th>#</th>
-                <th>user_id</th>
+                <th>Timestamp</th>
                 <th>resource</th>
                 <th>Raw JSON</th>
                 <th>Preview</th>

@@ -425,27 +425,36 @@ def get_webhooks():
         offset = int(request.args.get("offset", 0))
 
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM webhooks WHERE topic = %s", (topic,))
+            # total correcto: cantidad de resources únicos con su último evento
+            cur.execute("""
+                WITH latest AS (
+                    SELECT resource, MAX(received_at) AS max_received
+                    FROM webhooks
+                    WHERE topic = %s
+                    GROUP BY resource
+                )
+                SELECT COUNT(*) FROM latest
+            """, (topic,))
             total = cur.fetchone()[0]
 
         rows = []
         with conn.cursor() as cur:
-            cur.execute(
-                """
+            cur.execute("""
+                WITH latest AS (
+                    SELECT resource, MAX(received_at) AS max_received
+                    FROM webhooks
+                    WHERE topic = %s
+                    GROUP BY resource
+                )
                 SELECT w.payload, p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status
-                    FROM webhooks w
-                    JOIN (
-                        SELECT resource, MAX(received_at) AS max_received
-                        FROM webhooks
-                        WHERE topic = %s
-                        GROUP BY resource
-                    ) latest ON w.resource = latest.resource AND w.received_at = latest.max_received
-                    LEFT JOIN ml_previews p ON w.resource = p.resource
-                    ORDER BY w.received_at DESC
-                    LIMIT %s OFFSET %s
-                """,
-                (topic, limit, offset),
-            )
+                FROM latest
+                JOIN webhooks w
+                ON w.resource = latest.resource AND w.received_at = latest.max_received
+                LEFT JOIN ml_previews p
+                ON w.resource = p.resource
+                ORDER BY w.received_at DESC
+                LIMIT %s OFFSET %s
+            """, (topic, limit, offset))
             for row in cur.fetchall():
                 payload = row[0]
                 if isinstance(payload, str):
@@ -476,7 +485,7 @@ def get_webhooks():
                 "total": total
             }
         })
-
+    
     except Exception as e:
         import traceback
         print("❌ Error leyendo DB:", e)

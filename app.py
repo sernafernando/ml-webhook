@@ -305,7 +305,7 @@ def render_ml_view(resource, data):
               <div class="card-header">📦 Tu publicación</div>
               <div class="card-body">
                 <div class="d-flex justify-content-between flex-wrap">
-                  <div><strong>Item ID:</strong> {f'<a href="https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{winner_id}" target="_blank" rel="noopener noreferrer">{winner_id}</a>' if (catalog_product_id and winner_id) else (winner_id or "—")}</div>
+                  <div><strong>Item ID:</strong> {item_id}</div>
                   <div><strong>Estado:</strong> {status or "—"}</div>
                 </div>
                 <div class="mt-2">
@@ -330,7 +330,7 @@ def render_ml_view(resource, data):
               <div class="card-header">🏆 Ganador</div>
               <div class="card-body">
                 <div class="d-flex justify-content-between flex-wrap">
-                  <div><strong>Item ID:</strong> {winner_id or "—"}</div>
+                  <div><strong>Item ID:</strong> {f'<a href="https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{winner_id}" target="_blank" rel="noopener noreferrer">{winner_id}</a>' if (catalog_product_id and winner_id) else (winner_id or "—")}</div>
                   <div><strong>Precio:</strong> {_fmt_money(winner_price)}</div>
                 </div>
                 <hr>

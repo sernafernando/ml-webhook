@@ -240,7 +240,7 @@ function App() {
                         {/* ⬇️ NUEVO: mostrar la marca si viene */}
                         {evt.db_preview.brand ? (
                           <>
-                            <small className="text-body-secondary">Marca: {evt.db_preview.brand}</small><br />
+                            <small className="text-light">Marca: {evt.db_preview.brand}</small><br />
                           </>
                         ) : null}
 

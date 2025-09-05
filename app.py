@@ -394,8 +394,7 @@ def get_webhooks():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT DISTINCT ON (w.resource)
-                        w.payload, p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status
+                SELECT w.payload, p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status
                     FROM webhooks w
                     JOIN (
                         SELECT resource, MAX(received_at) AS max_received

@@ -371,80 +371,51 @@ def webhook():
         if not evento:
             return "JSON inválido o vacío", 400
 
-        print("📩 Webhook recibido:", json.dumps(evento, indent=2))
-
-        # --- Derivar base_resource si corresponde ---
         resource = evento.get("resource", "")
         base_resource = resource.split("/price_to_win")[0] if resource and resource.startswith("/items/MLA") else None
+        inserted = []
 
-        # --- INSERT 1: original ---
+        # Insert original
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
+                cur.execute("""
                     INSERT INTO webhooks (topic, user_id, resource, payload, webhook_id)
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (webhook_id) DO NOTHING
-                    """,
-                    (
-                        evento.get("topic"),
-                        evento.get("user_id"),
-                        resource,
-                        Json(evento),
-                        evento.get("_id"),
-                    ),
-                )
-            print("✅ Insert original OK")
-        except Exception as e1:
-            import traceback
-            print("❌ Falla INSERT original:", e1)
-            traceback.print_exc()
+                """, (evento.get("topic"), evento.get("user_id"), resource, Json(evento), evento.get("_id")))
+                if cur.rowcount == 1:
+                    inserted.append(evento.get("_id"))
+        except Exception as e:
             if DEBUG_WEBHOOK:
-                return f"INSERT original fail: {e1}", 500  # ayuda a ver el motivo exacto
+                return f"INSERT original fail: {e}", 500
 
-        # --- INSERT 2: normalizado (con sufijo -norm) ---
+        # Insert normalizado
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
+                cur.execute("""
                     INSERT INTO webhooks (topic, user_id, resource, payload, webhook_id)
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (webhook_id) DO NOTHING
-                    """,
-                    (
-                        evento.get("topic"),
-                        evento.get("user_id"),
-                        base_resource or resource,
-                        Json(evento),
-                        f"{evento.get('_id')}-norm",
-                    ),
-                )
-            print("✅ Insert normalizado OK")
-        except Exception as e2:
-            import traceback
-            print("❌ Falla INSERT normalizado:", e2)
-            traceback.print_exc()
+                """, (evento.get("topic"), evento.get("user_id"), base_resource or resource, Json(evento), f"{evento.get('_id')}-norm"))
+                if cur.rowcount == 1:
+                    inserted.append(f"{evento.get('_id')}-norm")
+        except Exception as e:
             if DEBUG_WEBHOOK:
-                return f"INSERT normalizado fail: {e2}", 500
+                return f"INSERT normalizado fail: {e}", 500
 
-        # --- Actualizar preview SIN romper el webhook ---
+        # Refrescar preview sin tirar 500 si falla
         if base_resource:
             try:
-                print(f"🔎 fetch_and_store_preview({base_resource}) …")
                 fetch_and_store_preview(base_resource)
-                print("✅ preview actualizado")
-            except Exception as e3:
-                import traceback
-                print("⚠️ fetch_and_store_preview falló, pero continúo:", e3)
-                traceback.print_exc()
-                # no devolvemos 500; solo log
+            except Exception as e:
+                print("⚠️ fetch_and_store_preview falló:", e)
 
+        # En dev, devolvé qué se insertó
+        if DEBUG_WEBHOOK:
+            return {"ok": True, "inserted": inserted, "base_resource": base_resource}, 200
         return "Evento recibido", 200
 
     except Exception as e:
-        import traceback
-        print("❌ Error en webhook (envolvente):", e)
-        traceback.print_exc()
         return ("Error interno" if not DEBUG_WEBHOOK else f"Webhook fail: {e}"), 500
 
 
@@ -480,12 +451,19 @@ def get_webhooks():
                     WHERE topic = %s
                     GROUP BY resource
                 )
-                SELECT w.payload, p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status
+                SELECT w.payload,
+                    p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status
                 FROM latest
                 JOIN webhooks w
                 ON w.resource = latest.resource AND w.received_at = latest.max_received
                 LEFT JOIN ml_previews p
-                ON w.resource = p.resource
+                ON (
+                    CASE
+                        WHEN w.resource LIKE '/items/MLA%%/price_to_win'
+                        THEN split_part(w.resource, '/price_to_win', 1)
+                        ELSE w.resource
+                    END
+                    ) = p.resource
                 ORDER BY w.received_at DESC
                 LIMIT %s OFFSET %s
             """, (topic, limit, offset))

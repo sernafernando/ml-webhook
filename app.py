@@ -394,14 +394,13 @@ def get_webhooks():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT w.payload, 
-                       p.title, p.price, p.currency_id, p.thumbnail,
-                       p.winner, p.winner_price, p.status
-                FROM webhooks w
-                LEFT JOIN ml_previews p ON w.resource = p.resource
-                WHERE w.topic = %s
-                ORDER BY w.received_at DESC
-                LIMIT %s OFFSET %s
+                SELECT DISTINCT ON (w.resource)
+                        w.payload, p.title, p.price, p.currency_id, p.thumbnail, p.status, p.winner, p.winner_price
+                    FROM webhooks w
+                    LEFT JOIN ml_previews p ON w.resource = p.resource
+                    WHERE w.topic = %s
+                    ORDER BY w.resource, w.received_at DESC
+                    LIMIT %s OFFSET %s
                 """,
                 (topic, limit, offset),
             )

@@ -80,25 +80,50 @@ function App() {
   const toggleTheme = () => {
     setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
   };
-
+  
+  // 👇 helper para buscar dentro de cualquier campo del preview
+  function deepIncludes(obj, needle, depth = 2, seen = new WeakSet()) {
+    if (!needle) return true;
+    if (obj == null) return false;
+    const t = typeof obj;
+    if (t === "string" || t === "number" || t === "boolean") {
+      return String(obj).toLowerCase().includes(needle);
+    }
+    if (obj instanceof Date) {
+      return obj.toISOString().toLowerCase().includes(needle);
+    }
+    if (depth <= 0) return false;
+    if (Array.isArray(obj)) {
+      return obj.some(v => deepIncludes(v, needle, depth - 1, seen));
+    }
+    if (t === "object") {
+      if (seen.has(obj)) return false;
+      seen.add(obj);
+      return Object.values(obj).some(v => deepIncludes(v, needle, depth - 1, seen));
+    }
+    try {
+      return String(obj).toLowerCase().includes(needle);
+    } catch {
+      return false;
+    }
+  }
   // filtro por resource
   const needle = (filter || "").trim().toLowerCase();
 
-  const eventosFiltrados = events.filter(evt => {
+  const eventosFiltrados = Array.isArray(events) ? events.filter(evt => {
     if (!needle) return true;
 
-    const resourceHit = (evt.resource || "").toLowerCase().includes(needle);
+    try {
+      const resourceHit = (evt?.resource || "").toLowerCase().includes(needle);
+      const pv = evt?.db_preview ?? evt?.preview ?? {};
+      const previewHit = deepIncludes(pv, needle, 2);
 
-    // preview o db_preview, lo que tengas
-    const pv = evt.db_preview || evt.preview || {};
-
-    // convertir todos los valores a string y buscar en ellos
-    const previewHit = Object.values(pv).some(val =>
-      (val !== null && val !== undefined && String(val).toLowerCase().includes(needle))
-    );
-
-    return resourceHit || previewHit;
-  });
+      return resourceHit || previewHit;
+    } catch (e) {
+      console.error("Filtro: error evaluando evento", e, evt);
+      return true; // fallback: no ocultar
+    }
+  }) : [];
 
   const topicLabels = {
     "items": "🛒 Publicaciones",

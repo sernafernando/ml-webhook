@@ -305,7 +305,7 @@ def render_ml_view(resource, data):
               <div class="card-header">📦 Tu publicación</div>
               <div class="card-body">
                 <div class="d-flex justify-content-between flex-wrap">
-                  <div><strong>Item ID:</strong> {item_id}</div>
+                  <div><strong>Item ID:</strong> {f'<a href="https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{item_id}" target="_blank" rel="noopener noreferrer">{item_id}</a>' if (catalog_product_id and item_id) else (item_id or "—")}</div>
                   <div><strong>Estado:</strong> {status or "—"}</div>
                 </div>
                 <div class="mt-2">

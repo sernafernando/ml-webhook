@@ -557,7 +557,6 @@ def get_webhooks():
 
 
 
-@app.route("/api/ml/render")
 def render_meli_resource():
     resource = request.args.get("resource")
     if not resource:
@@ -565,10 +564,14 @@ def render_meli_resource():
 
     try:
         token = get_token()
-        res = requests.get(
-            f"https://api.mercadolibre.com{resource}",
-            headers={"Authorization": f"Bearer {token}"}
-        )
+
+        # 👇 Detectar si es un recurso de price_to_win
+        if resource.endswith("/price_to_win"):
+            url = f"https://api.mercadolibre.com{resource}?version=v2"
+        else:
+            url = f"https://api.mercadolibre.com{resource}"
+
+        res = requests.get(url, headers={"Authorization": f"Bearer {token}"})
         data = res.json()
 
         body = render_ml_view(resource, data)
@@ -591,26 +594,6 @@ def render_meli_resource():
     except Exception as e:
         print("❌ Error en renderizado:", e)
         return "Error interno en renderizado", 500
-
-    except Exception as e:
-        print("❌ Error en renderizado:", e)
-        return "Error interno en renderizado", 500
-
-@app.route("/api/webhooks/topics", methods=["GET"])
-def get_topics():
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT topic, COUNT(*)
-                FROM webhooks
-                GROUP BY topic
-                ORDER BY COUNT(*) DESC
-            """)
-            topics = [{"topic": row[0], "count": row[1]} for row in cur.fetchall()]
-        return jsonify(topics)
-    except Exception as e:
-        print("❌ Error obteniendo topics:", e)
-        return jsonify({"error": str(e)}), 500
 
 
 

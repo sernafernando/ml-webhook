@@ -91,6 +91,7 @@ function App() {
       winning: { className: "bg-success", label: "Ganando" },
       sharing_first_place: { className: "bg-warning text-dark", label: "Compartiendo primer lugar" },
       competing: { className: "bg-danger", label: "Perdiendo" },
+      not_listed: { className: "bg-secondary", label: "No listado" },
     };
     const m = map[status] || { className: "bg-secondary", label: status };
     return <span className={`badge ${m.className}`}>{m.label}</span>;

@@ -373,50 +373,72 @@ def webhook():
 
         resource = evento.get("resource", "")
         base_resource = resource.split("/price_to_win")[0] if resource and resource.startswith("/items/MLA") else None
-        inserted = []
 
-        # Insert original
+        results = {
+            "received_resource": resource,
+            "base_resource": base_resource,
+            "insert_original": None,
+            "insert_norm": None,
+            "errors": [],
+        }
+
+        # INSERT 1: original (webhook_id = _id)
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     INSERT INTO webhooks (topic, user_id, resource, payload, webhook_id)
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (webhook_id) DO NOTHING
-                """, (evento.get("topic"), evento.get("user_id"), resource, Json(evento), evento.get("_id")))
-                if cur.rowcount == 1:
-                    inserted.append(evento.get("_id"))
+                    """,
+                    (
+                        evento.get("topic"),
+                        evento.get("user_id"),
+                        resource,
+                        Json(evento),
+                        evento.get("_id"),
+                    ),
+                )
+                results["insert_original"] = {"rowcount": cur.rowcount, "webhook_id": evento.get("_id")}
         except Exception as e:
-            if DEBUG_WEBHOOK:
-                return f"INSERT original fail: {e}", 500
+            results["errors"].append(f"insert_original: {e}")
 
-        # Insert normalizado
+        # INSERT 2: normalizado (webhook_id = _id + '-norm')
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     INSERT INTO webhooks (topic, user_id, resource, payload, webhook_id)
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (webhook_id) DO NOTHING
-                """, (evento.get("topic"), evento.get("user_id"), base_resource or resource, Json(evento), f"{evento.get('_id')}-norm"))
-                if cur.rowcount == 1:
-                    inserted.append(f"{evento.get('_id')}-norm")
+                    """,
+                    (
+                        evento.get("topic"),
+                        evento.get("user_id"),
+                        base_resource or resource,
+                        Json(evento),
+                        f"{evento.get('_id')}-norm",
+                    ),
+                )
+                results["insert_norm"] = {"rowcount": cur.rowcount, "webhook_id": f"{evento.get('_id')}-norm"}
         except Exception as e:
-            if DEBUG_WEBHOOK:
-                return f"INSERT normalizado fail: {e}", 500
+            results["errors"].append(f"insert_norm: {e}")
 
-        # Refrescar preview sin tirar 500 si falla
+        # Refrescar preview sin quebrar el webhook
         if base_resource:
             try:
                 fetch_and_store_preview(base_resource)
+                results["preview_refreshed"] = True
             except Exception as e:
-                print("⚠️ fetch_and_store_preview falló:", e)
+                results["preview_refreshed"] = False
+                results["errors"].append(f"fetch_and_store_preview: {e}")
 
-        # En dev, devolvé qué se insertó
-        if DEBUG_WEBHOOK:
-            return {"ok": True, "inserted": inserted, "base_resource": base_resource}, 200
-        return "Evento recibido", 200
+        status = 200 if not DEBUG_WEBHOOK else 200
+        return (jsonify(results), status)
 
     except Exception as e:
-        return ("Error interno" if not DEBUG_WEBHOOK else f"Webhook fail: {e}"), 500
+        # fallback
+        return (jsonify({"ok": False, "fatal": str(e)}), 500)
 
 
 @app.route("/api/webhooks", methods=["GET"])
@@ -444,29 +466,30 @@ def get_webhooks():
 
         rows = []
         with conn.cursor() as cur:
-            cur.execute("""
-                WITH latest AS (
-                    SELECT resource, MAX(received_at) AS max_received
-                    FROM webhooks
-                    WHERE topic = %s
-                    GROUP BY resource
-                )
-                SELECT w.payload,
-                    p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status
-                FROM latest
-                JOIN webhooks w
-                ON w.resource = latest.resource AND w.received_at = latest.max_received
-                LEFT JOIN ml_previews p
-                ON (
-                    CASE
-                        WHEN w.resource LIKE '/items/MLA%%/price_to_win'
-                        THEN split_part(w.resource, '/price_to_win', 1)
-                        ELSE w.resource
-                    END
-                    ) = p.resource
-                ORDER BY w.received_at DESC
-                LIMIT %s OFFSET %s
-            """, (topic, limit, offset))
+            with conn.cursor() as cur:
+                cur.execute("""
+                    WITH latest AS (
+                        SELECT resource, MAX(received_at) AS max_received
+                        FROM webhooks
+                        WHERE topic = %s
+                        GROUP BY resource
+                    )
+                    SELECT w.payload,
+                        p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status
+                    FROM latest
+                    JOIN webhooks w
+                    ON w.resource = latest.resource AND w.received_at = latest.max_received
+                    LEFT JOIN ml_previews p
+                    ON (
+                        CASE
+                            WHEN w.resource LIKE '/items/MLA%%/price_to_win'
+                            THEN split_part(w.resource, '/price_to_win', 1)
+                            ELSE w.resource
+                        END
+                        ) = p.resource
+                    ORDER BY w.received_at DESC
+                    LIMIT %s OFFSET %s
+                """, (topic, limit, offset))
             for row in cur.fetchall():
                 payload = row[0]
                 if isinstance(payload, str):
@@ -646,6 +669,31 @@ def index():
 @app.route("/<path:path>")
 def assets(path):
     return send_from_directory("frontend/dist", path)
+
+@app.route("/debug/dbinfo")
+def debug_dbinfo():
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT current_database(), current_user, inet_server_addr(), inet_server_port();")
+            db, user, host, port = cur.fetchone()
+
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM webhooks
+                WHERE resource LIKE '/items/MLA2243355590%%'
+            """)
+            count = cur.fetchone()[0]
+
+        return jsonify({
+            "db": db,
+            "user": user,
+            "host": str(host),
+            "port": port,
+            "webhooks_for_item": count
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 3000))

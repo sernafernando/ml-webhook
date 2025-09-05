@@ -164,6 +164,11 @@ def fetch_and_store_preview(resource: str):
             res_item = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
             item_data = res_item.json()
 
+            brand_name = next(
+                (a.get("value_name") for a in item_data.get("attributes", []) if a.get("id") == "BRAND"),
+                ""
+            )
+
             preview.update({
                 "title": item_data.get("title", ""),
                 "thumbnail": item_data.get("thumbnail", ""),
@@ -171,6 +176,7 @@ def fetch_and_store_preview(resource: str):
                 "price": item_data.get("price"),
                 "permalink": item_data.get("permalink", ""),
                 "catalog_product_id": item_data.get("catalog_product_id"),
+                "brand": brand_name,
                 # opcionalmente podrías setear winner_url/winner_line_html = None acá
             })
 

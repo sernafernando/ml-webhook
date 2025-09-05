@@ -284,14 +284,36 @@ def render_ml_view(resource, data):
         if item_id and ml_url:
             html_parts.append(make_item_card(item_id, ml_url, data))
 
-    if resource.startswith("/seller-promotions/"):
-        token = get_token()
-        res = requests.get(
-            f"https://api.mercadolibre.com{resource}?app_version=v2",
-            headers={"Authorization": f"Bearer {token}"}
-        )
-        promo_data = res.json()
-        return render_json_as_html(promo_data)
+    elif resource.startswith("/seller-promotions/offers/"):
+        try:
+            token = get_token()
+            res = requests.get(
+                f"https://api.mercadolibre.com{resource}?app_version=v2",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            offer_data = res.json()
+
+            # Mostrar tabla de la promo
+            html_parts.append(render_json_as_html(offer_data))
+
+            # Si viene item_id, cargamos la card
+            item_id = offer_data.get("item_id")
+            if item_id:
+                try:
+                    res_item = requests.get(
+                        f"https://api.mercadolibre.com/items/{item_id}",
+                        headers={"Authorization": f"Bearer {token}"}
+                    )
+                    item_data = res_item.json()
+                    ml_url = item_data.get("permalink")
+                    if ml_url:
+                        html_parts.append("<h4 class='mt-4'>📦 Publicación asociada</h4>")
+                        html_parts.append(make_item_card(item_id, ml_url, item_data))
+                except Exception as e:
+                    html_parts.append(f"<div class='alert alert-warning'>No se pudo cargar el catálogo: {e}</div>")
+
+        except Exception as e:
+            html_parts.append(f"<div class='alert alert-danger'>❌ Error al consultar offer: {e}</div>")
 
     # -------------------------------
     # Siempre: tabla JSON

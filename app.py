@@ -456,13 +456,13 @@ def get_webhooks():
                 )
                 SELECT
                     w.payload,
-                    p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status
+                    p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, w.received_at
                 FROM latest
                 JOIN webhooks w
                   ON w.resource = latest.resource
                  AND w.received_at = latest.max_received
                 LEFT JOIN ml_previews p
-                  ON p.resource = w.resource             -- 👈 clave: preview por el mismo resource
+                  ON p.resource = w.resource        
                 ORDER BY w.received_at DESC
                 LIMIT %s OFFSET %s
             """, (topic, limit, offset))
@@ -491,7 +491,7 @@ def get_webhooks():
 
             # Adjuntamos preview siempre (si no hay, vendrá con None en sus campos)
             payload["preview"] = preview
-
+            payload["received_at"] = row[8].strftime("%Y-%m-%d %H:%M:%S") if row[8] else None
             rows.append(payload)
 
         return jsonify({

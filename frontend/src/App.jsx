@@ -149,7 +149,7 @@ function App() {
               {eventosFiltrados.map((evt, i) => (
                 <tr key={i}>
                   <td>{i + 1 + pagination.offset}</td>
-                  <td>{evt.user_id}</td>
+                  <td>{evt.received_at || "-"}</td>
                   <td>{evt.resource}</td>
                   <td>
                     <details>

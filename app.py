@@ -24,6 +24,9 @@ ML_REFRESH_TOKEN = os.getenv("ML_REFRESH_TOKEN")
 ACCESS_TOKEN = None
 EXPIRATION = 0
 
+DEBUG_WEBHOOK = os.getenv("DEBUG_WEBHOOK", "0") == "1"
+
+
 FAVICON_DIR = "https://ml-webhook.gaussonline.com.ar/assets/white-g-BfxDaKwI.png"
 
 def refresh_token():
@@ -370,61 +373,79 @@ def webhook():
 
         print("📩 Webhook recibido:", json.dumps(evento, indent=2))
 
-        # 1) Insert original
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO webhooks (topic, user_id, resource, payload, webhook_id)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (webhook_id) DO NOTHING
-                """,
-                (
-                    evento.get("topic"),
-                    evento.get("user_id"),
-                    evento.get("resource"),
-                    Json(evento),
-                    evento.get("_id"),
-                ),
-            )
-
+        # --- Derivar base_resource si corresponde ---
         resource = evento.get("resource", "")
         base_resource = resource.split("/price_to_win")[0] if resource and resource.startswith("/items/MLA") else None
 
-        # 2) Insert normalizado (con webhook_id -norm)
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO webhooks (topic, user_id, resource, payload, webhook_id)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (webhook_id) DO NOTHING
-                """,
-                (
-                    evento.get("topic"),
-                    evento.get("user_id"),
-                    base_resource or resource,
-                    Json(evento),
-                    f"{evento.get('_id')}-norm",
-                ),
-            )
+        # --- INSERT 1: original ---
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO webhooks (topic, user_id, resource, payload, webhook_id)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (webhook_id) DO NOTHING
+                    """,
+                    (
+                        evento.get("topic"),
+                        evento.get("user_id"),
+                        resource,
+                        Json(evento),
+                        evento.get("_id"),
+                    ),
+                )
+            print("✅ Insert original OK")
+        except Exception as e1:
+            import traceback
+            print("❌ Falla INSERT original:", e1)
+            traceback.print_exc()
+            if DEBUG_WEBHOOK:
+                return f"INSERT original fail: {e1}", 500  # ayuda a ver el motivo exacto
 
-        # 3) IMPORTANTE: no dejar que un error acá tire 500
+        # --- INSERT 2: normalizado (con sufijo -norm) ---
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO webhooks (topic, user_id, resource, payload, webhook_id)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (webhook_id) DO NOTHING
+                    """,
+                    (
+                        evento.get("topic"),
+                        evento.get("user_id"),
+                        base_resource or resource,
+                        Json(evento),
+                        f"{evento.get('_id')}-norm",
+                    ),
+                )
+            print("✅ Insert normalizado OK")
+        except Exception as e2:
+            import traceback
+            print("❌ Falla INSERT normalizado:", e2)
+            traceback.print_exc()
+            if DEBUG_WEBHOOK:
+                return f"INSERT normalizado fail: {e2}", 500
+
+        # --- Actualizar preview SIN romper el webhook ---
         if base_resource:
             try:
                 print(f"🔎 fetch_and_store_preview({base_resource}) …")
                 fetch_and_store_preview(base_resource)
                 print("✅ preview actualizado")
-            except Exception as e:
+            except Exception as e3:
                 import traceback
-                print("⚠️ fetch_and_store_preview falló, pero continúo:", e)
+                print("⚠️ fetch_and_store_preview falló, pero continúo:", e3)
                 traceback.print_exc()
+                # no devolvemos 500; solo log
 
         return "Evento recibido", 200
 
     except Exception as e:
         import traceback
-        print("❌ Error en webhook:", e)
+        print("❌ Error en webhook (envolvente):", e)
         traceback.print_exc()
-        return "Error interno", 500
+        return ("Error interno" if not DEBUG_WEBHOOK else f"Webhook fail: {e}"), 500
 
 
 @app.route("/api/webhooks", methods=["GET"])

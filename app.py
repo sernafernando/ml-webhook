@@ -56,6 +56,15 @@ def get_token():
         refresh_token()
     return ACCESS_TOKEN
 
+def _fmt_ars(val):
+    try:
+        n = float(val)
+        s = f"{n:,.2f}"
+        # Formato es-AR: miles con punto y decimales con coma
+        return "$" + s.replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
+        return "—" if val in (None, "") else str(val)
+
 def render_json_as_html(data):
     if isinstance(data, dict):
         rows = []
@@ -92,30 +101,56 @@ def fetch_and_store_preview(resource: str):
         if resource.endswith("/price_to_win"):
             item_id = resource.split("/")[2]
 
-            # consulta 1: datos básicos del item
+            # consulta 1: datos básicos del item (trae catalog_product_id)
             res_item = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=headers)
             item_data = res_item.json()
 
+            catalog_product_id = item_data.get("catalog_product_id")  # <<--- lo necesitamos
             preview.update({
                 "title": item_data.get("title", ""),
                 "thumbnail": item_data.get("thumbnail", ""),
                 "currency_id": item_data.get("currency_id", ""),
                 "permalink": item_data.get("permalink", ""),
+                "catalog_product_id": catalog_product_id,              # <<--- lo sumamos al preview (no a la DB)
             })
 
-            # consulta 2: datos competitivos
+            # consulta 2: price_to_win
             res_ptw = requests.get(f"https://api.mercadolibre.com/items/{item_id}/price_to_win", headers=headers)
             ptw_data = res_ptw.json()
 
+            winner_id = (ptw_data.get("winner") or {}).get("item_id")
+            winner_price = (ptw_data.get("winner") or {}).get("price")
+            current_price = ptw_data.get("current_price")
+
             preview.update({
-                "price": ptw_data.get("current_price"),
+                "price": current_price,
                 "status": ptw_data.get("status"),
-                "winner": ptw_data.get("winner", {}).get("item_id"),
-                "winner_price": ptw_data.get("winner", {}).get("price"),
+                "winner": winner_id,
+                "winner_price": winner_price,
             })
 
+            # -------- NUEVO: campos de preview listos para el frontend --------
+            if catalog_product_id and winner_id:
+                winner_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{winner_id}"
+            else:
+                winner_url = None
+
+            preview["winner_url"] = winner_url
+            preview["winner_price_fmt"] = _fmt_ars(winner_price)
+            # opcional: línea HTML ya armada (si querés inyectar tal cual en React)
+            if winner_url:
+                preview["winner_line_html"] = (
+                    f'🏆 Ganador: <a href="{winner_url}" target="_blank" rel="noopener noreferrer">{winner_id}</a>'
+                    f' — {_fmt_ars(winner_price)}'
+                )
+            else:
+                preview["winner_line_html"] = (
+                    f'🏆 Ganador: {winner_id or "—"}'
+                    f' — {_fmt_ars(winner_price)}'
+                )
+
         else:
-            # caso normal /items/{id}
+            # caso normal /items/{id} (sin cambios)
             res_item = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
             item_data = res_item.json()
 
@@ -125,8 +160,11 @@ def fetch_and_store_preview(resource: str):
                 "currency_id": item_data.get("currency_id", ""),
                 "price": item_data.get("price"),
                 "permalink": item_data.get("permalink", ""),
+                "catalog_product_id": item_data.get("catalog_product_id"),
+                # opcionalmente podrías setear winner_url/winner_line_html = None acá
             })
 
+        # --- Persistís SOLO lo que ya guardabas (no cambia el esquema) ---
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, winner, winner_price, status, last_updated)
@@ -151,8 +189,8 @@ def fetch_and_store_preview(resource: str):
                 preview.get("status"),
             ))
             conn.commit()
-        print("🔍 Preview generado:", preview)
 
+        print("🔍 Preview generado:", preview)
         return preview
 
     except Exception as e:

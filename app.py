@@ -566,15 +566,16 @@ def render_meli_resource():
     try:
         token = get_token()
 
+        if "/price_to_win" in resource:
+            resource += ("&" if "?" in resource else "?") + "version=v2"
         
         res = requests.get(
             f"https://api.mercadolibre.com{resource}",
             headers={"Authorization": f"Bearer {token}"}
         )
         data = res.json()
-
-        if "/price_to_win" in resource:
-            resource += ("&" if "?" in resource else "?") + "version=v2"
+        
+        
 
         body = render_ml_view(resource, data)
 

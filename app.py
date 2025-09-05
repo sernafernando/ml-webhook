@@ -119,7 +119,7 @@ def fetch_and_store_preview(resource: str):
             })
 
             # consulta 2: price_to_win
-            res_ptw = requests.get(f"https://api.mercadolibre.com/items/{item_id}/price_to_win", headers=headers)
+            res_ptw = requests.get(f"https://api.mercadolibre.com/items/{item_id}/price_to_win?version=v2", headers=headers)
             ptw_data = res_ptw.json()
 
             winner_id = (ptw_data.get("winner") or {}).get("item_id")
@@ -305,14 +305,14 @@ def render_ml_view(resource, data):
         if item_id:
             try:
                 ptw_res = requests.get(
-                    f"https://api.mercadolibre.com/items/{item_id}/price_to_win",
+                    f"https://api.mercadolibre.com/items/{item_id}/price_to_win?version=v2",
                     headers={"Authorization": f"Bearer {token}"}
                 )
                 if ptw_res.status_code == 200:
                     ptw_data = ptw_res.json()
                     html_parts.append("<h4 class='mt-4'>🏁 Catálogo</h4>")
                     # 👉 reusar la misma lógica de tu función, renderizando price_to_win dentro de offer
-                    html_parts.append(render_ml_view(f"/items/{item_id}/price_to_win", ptw_data))
+                    html_parts.append(render_ml_view(f"/items/{item_id}/price_to_win?version=v2", ptw_data))
                 else:
                     html_parts.append(
                         f"<div class='alert alert-warning'>⚠️ No se pudo cargar price_to_win de {item_id}: {ptw_res.text}</div>"
@@ -637,7 +637,7 @@ def consulta():
         mode = request.form.get("mode", "price_to_win")
 
         if item_id:
-            resource = f"/items/{item_id}" if mode == "items" else f"/items/{item_id}/price_to_win"
+            resource = f"/items/{item_id}" if mode == "items" else f"/items/{item_id}/price_to_win?version=v2"
 
             try:
                 token = get_token()

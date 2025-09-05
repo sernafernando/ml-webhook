@@ -432,8 +432,8 @@ def get_webhooks():
         limit = int(request.args.get("limit", 500))
         offset = int(request.args.get("offset", 0))
 
+        # 1) Total correcto: cantidad de resources únicos (último evento por resource dentro del topic)
         with conn.cursor() as cur:
-            # total correcto: cantidad de resources únicos con su último evento
             cur.execute("""
                 WITH latest AS (
                     SELECT resource, MAX(received_at) AS max_received
@@ -445,49 +445,54 @@ def get_webhooks():
             """, (topic,))
             total = cur.fetchone()[0]
 
-        rows = []
+        # 2) Filas a listar (último evento por resource) + preview por el MISMO resource
         with conn.cursor() as cur:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    WITH latest AS (
-                        SELECT resource, MAX(received_at) AS max_received
-                        FROM webhooks
-                        WHERE topic = %s
-                        GROUP BY resource
-                    )
-                    SELECT w.payload,
-                        p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status
-                    FROM latest
-                    JOIN webhooks w
-                    ON w.resource = latest.resource AND w.received_at = latest.max_received
-                    LEFT JOIN ml_previews p
-                    ON (
-                        CASE
-                            WHEN w.resource LIKE '/items/MLA%%/price_to_win'
-                            THEN split_part(w.resource, '/price_to_win', 1)
-                            ELSE w.resource
-                        END
-                        ) = p.resource
-                    ORDER BY w.received_at DESC
-                    LIMIT %s OFFSET %s
-                """, (topic, limit, offset))
-            for row in cur.fetchall():
-                payload = row[0]
-                if isinstance(payload, str):
+            cur.execute("""
+                WITH latest AS (
+                    SELECT resource, MAX(received_at) AS max_received
+                    FROM webhooks
+                    WHERE topic = %s
+                    GROUP BY resource
+                )
+                SELECT
+                    w.payload,
+                    p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status
+                FROM latest
+                JOIN webhooks w
+                  ON w.resource = latest.resource
+                 AND w.received_at = latest.max_received
+                LEFT JOIN ml_previews p
+                  ON p.resource = w.resource             -- 👈 clave: preview por el mismo resource
+                ORDER BY w.received_at DESC
+                LIMIT %s OFFSET %s
+            """, (topic, limit, offset))
+            rows_db = cur.fetchall()  # 👈 leemos TODO adentro del with
+
+        # 3) Construcción de respuesta (ya fuera del with: el cursor está cerrado)
+        rows = []
+        for row in rows_db:
+            payload = row[0]
+            # payload puede venir como jsonb (dict) o como string
+            if isinstance(payload, str):
+                try:
                     payload = json.loads(payload)
+                except Exception:
+                    payload = {"raw": payload}
 
-                preview = {
-                    "title": row[1],
-                    "price": row[2],
-                    "currency_id": row[3],
-                    "thumbnail": row[4],
-                    "winner": row[5],
-                    "winner_price": row[6],
-                    "status": row[7],
-                }
-                payload["preview"] = preview
+            preview = {
+                "title": row[1],
+                "price": row[2],
+                "currency_id": row[3],
+                "thumbnail": row[4],
+                "winner": row[5],
+                "winner_price": row[6],
+                "status": row[7],
+            }
 
-                rows.append(payload)
+            # Adjuntamos preview siempre (si no hay, vendrá con None en sus campos)
+            payload["preview"] = preview
+
+            rows.append(payload)
 
         return jsonify({
             "topic": topic,
@@ -498,12 +503,13 @@ def get_webhooks():
                 "total": total
             }
         })
-    
+
     except Exception as e:
         import traceback
         print("❌ Error leyendo DB:", e)
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
 
 
 

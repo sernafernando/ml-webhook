@@ -82,9 +82,23 @@ function App() {
   };
 
   // filtro por resource
-  const eventosFiltrados = events.filter(
-    evt => filter === '' || (evt.resource && evt.resource.includes(filter))
-  );
+  const needle = (filter || "").trim().toLowerCase();
+
+  const eventosFiltrados = events.filter(evt => {
+    if (!needle) return true;
+
+    const resourceHit = (evt.resource || "").toLowerCase().includes(needle);
+
+    // preview o db_preview, lo que tengas
+    const pv = evt.db_preview || evt.preview || {};
+
+    // convertir todos los valores a string y buscar en ellos
+    const previewHit = Object.values(pv).some(val =>
+      (val !== null && val !== undefined && String(val).toLowerCase().includes(needle))
+    );
+
+    return resourceHit || previewHit;
+  });
 
   const topicLabels = {
     "items": "🛒 Publicaciones",
@@ -189,43 +203,52 @@ function App() {
                   </td>
                   <td>
                     {evt.db_preview && evt.db_preview.title ? (
-                      <div className="d-flex align-items-center gap-2">
-                        <img
-                          src={evt.db_preview.thumbnail?.replace(/^http:\/\//i, "https://")}
-                          alt={evt.db_preview.title}
-                          style={{ width: '50px', height: '50px', objectFit: 'cover' }}
-                        />
-                        <div>
-                          <strong>{evt.db_preview.title}</strong><br />
-                          {evt.db_preview.currency_id} {evt.db_preview.price}
+                    <div className="d-flex align-items-center gap-2">
+                      <img
+                        src={evt.db_preview.thumbnail?.replace(/^http:\/\//i, "https://")}
+                        alt={evt.db_preview.title}
+                        style={{ width: '50px', height: '50px', objectFit: 'cover' }}
+                      />
+                      <div>
+                        <strong>{evt.db_preview.title}</strong><br />
 
-                          {/* ⬇️ reemplazo de tu badge actual */}
-                          {evt.db_preview.status && (
-                            <div className="mt-1">
-                              {getStatusBadge(evt.db_preview.status)}
-                            </div>
-                          )}
+                        {/* ⬇️ NUEVO: mostrar la marca si viene */}
+                        {evt.db_preview.brand ? (
+                          <>
+                            <small className="text-muted">Marca: {evt.db_preview.brand}</small><br />
+                          </>
+                        ) : null}
 
-                          {evt.db_preview && evt.db_preview.winner ? (
-                            <div className="ptw-line">
-                              {evt.db_preview.winner_url ? (
-                                <>
-                                  🏆 Ganador:{" "}
-                                  <a href={evt.db_preview.winner_url} target="_blank" rel="noopener noreferrer">
-                                    {evt.db_preview.winner}
-                                  </a>{" "}
-                                  — {evt.db_preview.winner_price_fmt}
-                                </>
-                              ) : (
-                                <>🏆 Ganador: {evt.db_preview.winner} — {fmtARS(evt.db_preview.winner_price)}</>
-                              )}
-                            </div>
-                          ) : null}
-                        </div>
+                        {evt.db_preview.currency_id} {evt.db_preview.price}
+
+                        {/* badge de estado */}
+                        {evt.db_preview.status && (
+                          <div className="mt-1">
+                            {getStatusBadge(evt.db_preview.status)}
+                          </div>
+                        )}
+
+                        {/* línea de ganador */}
+                        {evt.db_preview && evt.db_preview.winner ? (
+                          <div className="ptw-line">
+                            {evt.db_preview.winner_url ? (
+                              <>
+                                🏆 Ganador:{" "}
+                                <a href={evt.db_preview.winner_url} target="_blank" rel="noopener noreferrer">
+                                  {evt.db_preview.winner}
+                                </a>{" "}
+                                — {evt.db_preview.winner_price_fmt ?? fmtARS(evt.db_preview.winner_price)}
+                              </>
+                            ) : (
+                              <>🏆 Ganador: {evt.db_preview.winner} — {fmtARS(evt.db_preview.winner_price)}</>
+                            )}
+                          </div>
+                        ) : null}
                       </div>
-                    ) : (
-                      <em>-</em>
-                    )}
+                    </div>
+                  ) : (
+                    <em>-</em>
+                  )}
                   </td>
                   <td>
                     <button

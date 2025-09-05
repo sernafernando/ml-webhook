@@ -110,12 +110,18 @@ def fetch_and_store_preview(resource: str):
             item_data = res_item.json()
 
             catalog_product_id = item_data.get("catalog_product_id")  # <<--- lo necesitamos
+            brand_name = next(
+                (a.get("value_name") for a in item_data.get("attributes", []) if a.get("id") == "BRAND"),
+                ""
+            )
+
             preview.update({
                 "title": item_data.get("title", ""),
                 "thumbnail": item_data.get("thumbnail", ""),
                 "currency_id": item_data.get("currency_id", ""),
                 "permalink": item_data.get("permalink", ""),
-                "catalog_product_id": catalog_product_id,              # <<--- lo sumamos al preview (no a la DB)
+                "catalog_product_id": catalog_product_id,
+                "brand": brand_name,   # <<--- ahora sí trae la marca
             })
 
             # consulta 2: price_to_win
@@ -171,8 +177,8 @@ def fetch_and_store_preview(resource: str):
         # --- Persistís SOLO lo que ya guardabas (no cambia el esquema) ---
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, winner, winner_price, status, last_updated)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, winner, winner_price, status, brand, last_updated)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                 ON CONFLICT (resource) DO UPDATE SET
                     title = EXCLUDED.title,
                     price = EXCLUDED.price,
@@ -181,6 +187,7 @@ def fetch_and_store_preview(resource: str):
                     winner = EXCLUDED.winner,
                     winner_price = EXCLUDED.winner_price,
                     status = EXCLUDED.status,
+                    brand = EXCLUDED.brand,
                     last_updated = NOW();
             """, (
                 preview["resource"],
@@ -191,6 +198,7 @@ def fetch_and_store_preview(resource: str):
                 preview.get("winner"),
                 preview.get("winner_price"),
                 preview.get("status"),
+                preview.get("brand"),          # 👈 nuevo
             ))
             conn.commit()
 
@@ -575,7 +583,7 @@ def get_webhooks():
                 )
                 SELECT
                     w.payload,
-                    p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, w.received_at
+                    p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, w.received_at,p.brand
                 FROM latest
                 JOIN webhooks w
                   ON w.resource = latest.resource
@@ -606,6 +614,7 @@ def get_webhooks():
                 "winner": row[5],
                 "winner_price": row[6],
                 "status": row[7],
+                "brand": row[9],
             }
 
             # Adjuntamos preview siempre (si no hay, vendrá con None en sus campos)

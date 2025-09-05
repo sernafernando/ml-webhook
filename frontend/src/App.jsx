@@ -101,34 +101,44 @@ function App() {
     <div className={`App ${theme}-theme`}>
       <h1 className="app-title">📦 Webhooks Recibidos</h1>
 
-      {/* selector de topic */}
+      {/* selector de topic + filtro */}
       {topics.length > 0 && (
-        <div style={{ marginBottom: '1rem' }}>
-          <label style={{ marginRight: '1rem' }}>Topic:</label>
-          <select
-            value={selectedTopic || ""}
-            onChange={e => { 
-              setSelectedTopic(e.target.value); 
-              setOffset(0); 
-            }}
-          >
-            {topics.map(t => (
-              <option key={t.topic} value={t.topic}>
-                {t.topic} ({t.count})
-              </option>
-            ))}
-          </select>
-
-          {/* filtro */}
-          <input
-            type="text"
-            placeholder="Filtrar por resource..."
-            value={filter}
-            onChange={e => setFilter(e.target.value)}
-            style={{ marginLeft: '1rem' }}
-          />
+        <div className="mb-3">
+          <div className="row g-2 align-items-center">
+            <div className="col-md-6">
+              <label className="form-label fw-bold">Topic</label>
+              <select
+                className="form-select"
+                value={selectedTopic || ""}
+                onChange={e => { 
+                  setSelectedTopic(e.target.value); 
+                  setOffset(0); 
+                }}
+              >
+                {topics.map(t => (
+                  <option key={t.topic} value={t.topic}>
+                    {t.topic} ({t.count})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="col-md-6">
+              <label className="form-label fw-bold">Filtrar por resource</label>
+              <div className="input-group">
+                <span className="input-group-text">🔍</span>
+                <input
+                  type="text"
+                  className="form-control"
+                  placeholder="Ej: MLA123..."
+                  value={filter}
+                  onChange={e => setFilter(e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
         </div>
       )}
+
 
       {/* tabla del topic seleccionado */}
       {selectedTopic && (

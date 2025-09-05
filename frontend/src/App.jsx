@@ -79,6 +79,16 @@ function App() {
     evt => filter === '' || (evt.resource && evt.resource.includes(filter))
   );
 
+  const getStatusBadge = (status) => {
+    const map = {
+      winning: { className: "bg-success", label: "Ganando" },
+      sharing_first_place: { className: "bg-warning text-dark", label: "Ganando, compartiendo primer lugar" },
+      competing: { className: "bg-danger", label: "Perdiendo" },
+    };
+    const m = map[status] || { className: "bg-secondary", label: status };
+    return <span className={`badge ${m.className}`}>{m.label}</span>;
+  };
+
   return (
     <div className={`App ${theme}-theme`}>
       <h1 className="app-title">📦 Webhooks Recibidos</h1>
@@ -151,9 +161,10 @@ function App() {
                           <strong>{evt.preview.title}</strong><br />
                           {evt.preview.currency_id} {evt.preview.price}
 
+                          {/* ⬇️ reemplazo de tu badge actual */}
                           {evt.preview.status && (
                             <div className="mt-1">
-                              <span className="badge bg-info text-dark">{evt.preview.status}</span>
+                              {getStatusBadge(evt.preview.status)}
                             </div>
                           )}
 

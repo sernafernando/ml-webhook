@@ -294,34 +294,53 @@ function App() {
             </tbody>
           </table>
 
-          {/* controles de paginación */}
-          <div className="controls">
-            <label>
-              Ver últimos:
-              <select value={limit} onChange={e => { setOffset(0); setLimit(Number(e.target.value)); }}>
+          <div className="d-flex justify-content-between align-items-center my-3">
+            {/* Selector de límite */}
+            <div className="d-flex align-items-center">
+              <label className="me-2 fw-bold">Ver últimos:</label>
+              <select
+                className="form-select form-select-sm"
+                style={{ width: "auto" }}
+                value={limit}
+                onChange={e => { setOffset(0); setLimit(Number(e.target.value)); }}
+              >
                 <option value={100}>100</option>
                 <option value={500}>500</option>
                 <option value={1000}>1000</option>
                 <option value={5000}>5000</option>
               </select>
-            </label>
-            <button 
-              disabled={offset === 0} 
-              onClick={() => setOffset(Math.max(0, offset - limit))}
-            >
-              ⬅️ Anterior
-            </button>
-            <button 
-              disabled={offset + limit >= pagination.total} 
-              onClick={() => setOffset(offset + limit)}
-            >
-              ➡️ Siguiente
-            </button>
-            <span style={{ marginLeft: '1rem' }}>
-              Mostrando {pagination.offset + 1} - {Math.min(pagination.offset + limit, pagination.total)} 
-              de {pagination.total}
-            </span>
+            </div>
+
+            {/* Paginación Bootstrap */}
+            <nav>
+              <ul className="pagination pagination-sm mb-0">
+                <li className={`page-item ${offset === 0 ? "disabled" : ""}`}>
+                  <button
+                    className="page-link"
+                    onClick={() => setOffset(Math.max(0, offset - limit))}
+                  >
+                    ⬅️ Anterior
+                  </button>
+                </li>
+                <li className={`page-item ${offset + limit >= pagination.total ? "disabled" : ""}`}>
+                  <button
+                    className="page-link"
+                    onClick={() => setOffset(offset + limit)}
+                  >
+                    Siguiente ➡️
+                  </button>
+                </li>
+              </ul>
+            </nav>
+
+            {/* Info de rango */}
+            <div>
+              <span className="badge bg-secondary">
+                Mostrando {pagination.offset + 1} - {Math.min(pagination.offset + limit, pagination.total)} de {pagination.total}
+              </span>
+            </div>
           </div>
+
 
         </section>
       )}

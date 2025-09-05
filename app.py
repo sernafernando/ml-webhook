@@ -285,35 +285,45 @@ def render_ml_view(resource, data):
             html_parts.append(make_item_card(item_id, ml_url, data))
 
     elif resource.startswith("/seller-promotions/offers/"):
-        try:
-            token = get_token()
-            res = requests.get(
-                f"https://api.mercadolibre.com{resource}?app_version=v2",
-                headers={"Authorization": f"Bearer {token}"}
+        token = get_token()
+        url = f"https://api.mercadolibre.com{resource}"  # SIN ?app_version=v2
+        res = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+
+        if res.status_code != 200:
+            html_parts.append(
+                f"<div class='alert alert-danger'>❌ Error {res.status_code} consultando {resource}: {res.text}</div>"
             )
-            offer_data = res.json()
+            return "".join(html_parts)
 
-            # Mostrar tabla de la promo
-            html_parts.append(render_json_as_html(offer_data))
+        offer_data = res.json()
 
-            # Si viene item_id, cargamos la card
-            item_id = offer_data.get("item_id")
-            if item_id:
-                try:
-                    res_item = requests.get(
-                        f"https://api.mercadolibre.com/items/{item_id}",
-                        headers={"Authorization": f"Bearer {token}"}
+        # 1) Mostrar el JSON de la offer
+        html_parts.append(render_json_as_html(offer_data))
+
+        # 2) Si la offer trae item_id, renderizar ABAJO la vista de /items/{id}/price_to_win
+        item_id = offer_data.get("item_id")
+        if item_id:
+            try:
+                ptw_res = requests.get(
+                    f"https://api.mercadolibre.com/items/{item_id}/price_to_win",
+                    headers={"Authorization": f"Bearer {token}"}
+                )
+                if ptw_res.status_code == 200:
+                    ptw_data = ptw_res.json()
+                    html_parts.append("<h4 class='mt-4'>🏁 Competencia (price_to_win)</h4>")
+                    # 👉 reusar la misma lógica de tu función, renderizando price_to_win dentro de offer
+                    html_parts.append(render_ml_view(f"/items/{item_id}/price_to_win", ptw_data))
+                else:
+                    html_parts.append(
+                        f"<div class='alert alert-warning'>⚠️ No se pudo cargar price_to_win de {item_id}: {ptw_res.text}</div>"
                     )
-                    item_data = res_item.json()
-                    ml_url = item_data.get("permalink")
-                    if ml_url:
-                        html_parts.append("<h4 class='mt-4'>📦 Publicación asociada</h4>")
-                        html_parts.append(make_item_card(item_id, ml_url, item_data))
-                except Exception as e:
-                    html_parts.append(f"<div class='alert alert-warning'>No se pudo cargar el catálogo: {e}</div>")
+            except Exception as e:
+                html_parts.append(
+                    f"<div class='alert alert-warning'>⚠️ Error al cargar price_to_win de {item_id}: {e}</div>"
+                )
 
-        except Exception as e:
-            html_parts.append(f"<div class='alert alert-danger'>❌ Error al consultar offer: {e}</div>")
+        # Importante: cortamos acá para no ejecutar el bloque genérico final
+        return "".join(html_parts)
 
     # -------------------------------
     # Siempre: tabla JSON

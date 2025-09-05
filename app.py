@@ -427,7 +427,7 @@ def webhook():
         # Refrescar preview sin quebrar el webhook
         if base_resource:
             try:
-                fetch_and_store_preview(base_resource)
+                fetch_and_store_preview(resource)
                 results["preview_refreshed"] = True
             except Exception as e:
                 results["preview_refreshed"] = False

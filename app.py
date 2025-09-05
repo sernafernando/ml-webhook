@@ -342,6 +342,7 @@ def render_ml_view(resource, data):
         </div>
         """)    
 
+        return "".join(html_parts)
 
 
     # -------------------------------

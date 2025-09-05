@@ -565,7 +565,7 @@ def get_webhooks():
         limit = int(request.args.get("limit", 500))
         offset = int(request.args.get("offset", 0))
 
-        # 1) Total correcto: cantidad de resources únicos (último evento por resource dentro del topic)
+        # 1) total: cantidad de resources únicos con su último evento
         with conn.cursor() as cur:
             cur.execute("""
                 WITH latest AS (
@@ -574,11 +574,11 @@ def get_webhooks():
                     WHERE topic = %s
                     GROUP BY resource
                 )
-                SELECT COUNT(*) FROM latest
+                SELECT COUNT(*) FROM latest;
             """, (topic,))
             total = cur.fetchone()[0]
 
-        # 2) Filas a listar (último evento por resource) + preview por el MISMO resource
+        # 2) traer filas + preview (incluye brand) y received_at en GMT-3
         with conn.cursor() as cur:
             cur.execute("""
                 WITH latest AS (
@@ -588,29 +588,41 @@ def get_webhooks():
                     GROUP BY resource
                 )
                 SELECT
-                    w.payload,
-                    p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, w.received_at,p.brand
+                  w.payload,                            -- 0
+                  p.title,                              -- 1
+                  p.price,                              -- 2
+                  p.currency_id,                        -- 3
+                  p.thumbnail,                          -- 4
+                  p.winner,                             -- 5
+                  p.winner_price,                       -- 6
+                  p.status,                             -- 7
+                  p.brand,                              -- 8   << nuevo
+                  (w.received_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/Argentina/Buenos_Aires' AS received_local  -- 9
                 FROM latest
                 JOIN webhooks w
                   ON w.resource = latest.resource
                  AND w.received_at = latest.max_received
                 LEFT JOIN ml_previews p
-                  ON p.resource = w.resource        
+                  ON (
+                       CASE
+                         WHEN w.resource LIKE '/items/MLA%%/price_to_win'
+                           THEN split_part(w.resource, '/price_to_win', 1)
+                         ELSE w.resource
+                       END
+                     ) = p.resource
                 ORDER BY w.received_at DESC
-                LIMIT %s OFFSET %s
+                LIMIT %s OFFSET %s;
             """, (topic, limit, offset))
-            rows_db = cur.fetchall()  # 👈 leemos TODO adentro del with
+            rows = cur.fetchall()
 
-        # 3) Construcción de respuesta (ya fuera del with: el cursor está cerrado)
-        rows = []
-        for row in rows_db:
+        events = []
+        for row in rows:
             payload = row[0]
-            # payload puede venir como jsonb (dict) o como string
             if isinstance(payload, str):
                 try:
                     payload = json.loads(payload)
                 except Exception:
-                    payload = {"raw": payload}
+                    payload = {"raw": row[0]}
 
             preview = {
                 "title": row[1],
@@ -620,30 +632,33 @@ def get_webhooks():
                 "winner": row[5],
                 "winner_price": row[6],
                 "status": row[7],
-                "brand": row[9],
+                "brand": row[8],
             }
 
-            # Adjuntamos preview siempre (si no hay, vendrá con None en sus campos)
-            payload["db_preview"] = preview
-            local_dt = row[8].astimezone(ZoneInfo("America/Argentina/Buenos_Aires"))
-            payload["received_at"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
-            rows.append(payload)
+            # adjuntamos preview y timestamp legible (GMT-3)
+            payload["preview"] = preview
+            payload["db_preview"] = preview  # si tu front usa db_preview
+            received_dt = row[9]
+            payload["received_at"] = received_dt.strftime("%Y-%m-%d %H:%M:%S") if received_dt else None
+
+            events.append(payload)
 
         return jsonify({
             "topic": topic,
-            "events": rows,
+            "events": events,
             "pagination": {
                 "limit": limit,
                 "offset": offset,
-                "total": total
+                "total": total,
             }
-        })
+        }), 200
 
     except Exception as e:
         import traceback
-        print("❌ Error leyendo DB:", e)
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        # ayuda para debug rápido desde el front
+        return jsonify({"error": "internal_error", "detail": str(e)}), 500
+
 
 
 

@@ -286,7 +286,7 @@ def render_ml_view(resource, data):
 
     elif resource.startswith("/seller-promotions/offers/"):
         token = get_token()
-        url = f"https://api.mercadolibre.com{resource}"  # SIN ?app_version=v2
+        url = f"https://api.mercadolibre.com{resource}?app_version=v2"  # SIN ?app_version=v2
         res = requests.get(url, headers={"Authorization": f"Bearer {token}"})
 
         if res.status_code != 200:

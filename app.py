@@ -8,9 +8,23 @@ import time
 import psycopg2
 from psycopg2.extras import Json
 from zoneinfo import ZoneInfo
+from psycopg2 import pool
+from contextlib import contextmanager
 
-conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-conn.autocommit = True
+db_pool = pool.SimpleConnectionPool(
+    1, 10,
+    dsn=os.getenv("DATABASE_URL")
+)
+
+@contextmanager
+def db_cursor():
+    conn = db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            yield cur
+        conn.commit()
+    finally:
+        db_pool.putconn(conn)
 
 load_dotenv()
 
@@ -181,7 +195,7 @@ def fetch_and_store_preview(resource: str):
             })
 
         # --- Persistís SOLO lo que ya guardabas (no cambia el esquema) ---
-        with conn.cursor() as cur:
+        with db_cursor() as cur:
             cur.execute("""
                 INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, winner, winner_price, status, brand, last_updated)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
@@ -206,7 +220,7 @@ def fetch_and_store_preview(resource: str):
                 preview.get("status"),
                 preview.get("brand"),          # 👈 nuevo
             ))
-            conn.commit()
+            
 
         print("🔍 Preview generado:", preview)
         return preview
@@ -514,7 +528,7 @@ def webhook():
 
         # Insert ÚNICO: exactamente el resource recibido
         try:
-            with conn.cursor() as cur:
+            with db_cursor() as cur:
                 cur.execute(
                     """
                     INSERT INTO webhooks (topic, user_id, resource, payload, webhook_id)
@@ -566,7 +580,7 @@ def get_webhooks():
         offset = int(request.args.get("offset", 0))
 
         # 1) Total correcto: cantidad de resources únicos (último evento por resource dentro del topic)
-        with conn.cursor() as cur:
+        with db_cursor() as cur:
             cur.execute("""
                 WITH latest AS (
                     SELECT resource, MAX(received_at) AS max_received
@@ -579,7 +593,7 @@ def get_webhooks():
             total = cur.fetchone()[0]
 
         # 2) Filas a listar (último evento por resource) + preview por el MISMO resource
-        with conn.cursor() as cur:
+        with db_cursor() as cur:
             cur.execute("""
                 WITH latest AS (
                     SELECT resource, MAX(received_at) AS max_received
@@ -697,7 +711,7 @@ def render_meli_resource():
 @app.route("/api/webhooks/topics", methods=["GET"])
 def get_topics():
     try:
-        with conn.cursor() as cur:
+        with db_cursor() as cur:
             cur.execute("""
                 SELECT topic, COUNT(*)
                 FROM webhooks
@@ -798,7 +812,7 @@ def assets(path):
 @app.route("/debug/dbinfo")
 def debug_dbinfo():
     try:
-        with conn.cursor() as cur:
+        with db_cursor() as cur:
             cur.execute("SELECT current_database(), current_user, inet_server_addr(), inet_server_port();")
             db, user, host, port = cur.fetchone()
 

@@ -28,7 +28,7 @@ DEBUG_WEBHOOK = os.getenv("DEBUG_WEBHOOK", "0") == "1"
 
 FAVICON_DIR = "https://ml-webhook.gaussonline.com.ar/assets/white-g-BfxDaKwI.png"
 
-# 🔹 Pool de conexiones
+# 🔹 Pool de conexiones en lugar de conn global
 db_pool = pool.SimpleConnectionPool(
     1, 10,
     dsn=os.getenv("DATABASE_URL")
@@ -221,8 +221,44 @@ def fetch_and_store_preview(resource: str):
         return {"resource": resource, "title": "Error"}
 
 # ---------------------------------------------------------------------
-# Resto de tus rutas (NO cambié la lógica, solo la parte DB)
+# Tus rutas (todas intactas, solo cambiada la conexión)
 # ---------------------------------------------------------------------
+
+@app.route("/auth")
+def auth():
+    auth_url = (
+        f"https://auth.mercadolibre.com.ar/authorization?"
+        f"response_type=code&client_id={ML_CLIENT_ID}&redirect_uri={ML_REDIRECT_URI}"
+    )
+    return redirect(auth_url)
+
+@app.route("/callback")
+def callback():
+    code = request.args.get("code")
+    if not code:
+        return "Falta el parámetro 'code'", 400
+
+    token_url = "https://api.mercadolibre.com/oauth/token"
+    payload = {
+        "grant_type": "authorization_code",
+        "client_id": ML_CLIENT_ID,
+        "client_secret": ML_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": ML_REDIRECT_URI,
+    }
+
+    try:
+        response = requests.post(token_url, data=payload)
+        token_data = response.json()
+        print("🔑 Token recibido:", token_data)
+
+        if "access_token" in token_data:
+            return "Token obtenido correctamente ✅", 200
+        else:
+            return jsonify(token_data), 400
+
+    except Exception as e:
+        return f"Error: {str(e)}", 500
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -403,11 +439,14 @@ def debug_dbinfo():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ---------------------------------------------------------------------
-# Resto de tus rutas (sin cambios en la lógica de negocio)
-# ---------------------------------------------------------------------
-# ... (dejé igual /auth, /callback, /api/ml/render, /consulta, etc.)
-# ---------------------------------------------------------------------
+# frontend
+@app.route("/")
+def index():
+    return send_from_directory("frontend/dist", "index.html")
+
+@app.route("/<path:path>")
+def assets(path):
+    return send_from_directory("frontend/dist", path)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 3000))

@@ -908,6 +908,10 @@ def items_by_catalog():
         res = requests.get(url, headers=headers)
         data = res.json()
 
+        # ⚡ si piden json plano devolvemos directo
+        if request.args.get("format") == "json":
+            return jsonify(data)
+
         body = render_json_as_html(data)
         final_html = f"""
         <html>

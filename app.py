@@ -929,9 +929,34 @@ def items_by_catalog_cards():
     try:
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
-        url = f"https://api.mercadolibre.com/products/{product_id}/items"
-        res = requests.get(url, headers=headers)
-        data = res.json()
+
+        # --- Card general con datos del producto ---
+        url_product = f"https://api.mercadolibre.com/products/{product_id}"
+        res_product = requests.get(url_product, headers=headers)
+        product_data = res_product.json()
+        title = product_data.get("name", f"Producto {product_id}")
+        thumbnail = (product_data.get("pictures") or [{}])[0].get("url", "")
+
+        product_card = f"""
+        <div class="card bg-dark text-light border-info mb-4">
+          <div class="row g-0">
+            <div class="col-md-3 d-flex align-items-center justify-content-center p-2">
+              <img src="{thumbnail}" alt="{title}" class="img-fluid rounded-start" style="max-height: 120px; object-fit: cover;" />
+            </div>
+            <div class="col-md-9">
+              <div class="card-body">
+                <h4 class="card-title">{title}</h4>
+                <p class="card-text"><small class="text-muted">Catálogo {product_id}</small></p>
+              </div>
+            </div>
+          </div>
+        </div>
+        """
+
+        # --- Publicaciones asociadas ---
+        url_items = f"https://api.mercadolibre.com/products/{product_id}/items"
+        res_items = requests.get(url_items, headers=headers)
+        data = res_items.json()
 
         cards = []
         for item in data.get("results", []):
@@ -941,20 +966,19 @@ def items_by_catalog_cards():
             warranty = item.get("warranty", "—")
             seller_id = item.get("seller_id")
 
-            # 👉 consulta nickname del seller
+            # nickname del seller
             nickname = seller_id
-            if seller_id:
-                try:
-                    u = f"https://api.mercadolibre.com/users/{seller_id}"
-                    r_user = requests.get(u, headers=headers)
-                    if r_user.ok:
-                        nickname = r_user.json().get("nickname", seller_id)
-                except Exception:
-                    pass
+            try:
+                u = f"https://api.mercadolibre.com/users/{seller_id}"
+                r_user = requests.get(u, headers=headers)
+                if r_user.ok:
+                    nickname = r_user.json().get("nickname", seller_id)
+            except Exception:
+                pass
 
             permalink = f"https://articulo.mercadolibre.com.ar/{item_id}"
 
-            card_html = f"""
+            cards.append(f"""
               <div class="col-md-4 mb-3">
                 <div class="card bg-dark text-light border-secondary h-100">
                   <div class="card-body">
@@ -967,19 +991,19 @@ def items_by_catalog_cards():
                   </div>
                 </div>
               </div>
-            """
-            cards.append(card_html)
+            """)
 
         body = f"""
         <div class="container">
-          <h3 class="mb-4">🛒 Publicaciones del catálogo {product_id}</h3>
+          {product_card}
+          <h5 class="mb-3">🛒 Publicaciones asociadas</h5>
           <div class="row">
             {''.join(cards)}
           </div>
         </div>
         """
 
-        final_html = f"""
+        html = f"""
         <html>
           <head>
             <meta charset="utf-8">
@@ -992,7 +1016,7 @@ def items_by_catalog_cards():
           </body>
         </html>
         """
-        return final_html, res.status_code
+        return html, 200
 
     except Exception as e:
         return f"❌ Error: {e}", 500

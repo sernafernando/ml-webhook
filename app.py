@@ -860,7 +860,7 @@ def listings_by_catalog():
     try:
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
-        url = f"https://api.mercadolibre.com/products/{catalog_id}/listings?site_id={site}"
+        url = f"https://api.mercadolibre.com/sites/${site}/search?catalog_product_id={catalog_id}"
         res = requests.get(url, headers=headers)
         return jsonify(res.json()), res.status_code
     except Exception as e:

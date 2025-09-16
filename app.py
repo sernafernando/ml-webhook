@@ -749,7 +749,13 @@ def consulta():
         mode = request.form.get("mode", "price_to_win")
 
         if item_id:
-            resource = f"/items/{item_id}" if mode == "items" else f"/items/{item_id}/price_to_win?version=v2"
+            if mode == "items":
+                resource = f"/items/{item_id}"
+            elif mode == "price_to_win":
+                resource = f"/items/{item_id}/price_to_win?version=v2"
+            elif mode == "catalog_cards":
+                # 👉 redirección al nuevo endpoint
+                return redirect(f"/itemsByCatalogCards?product_id={item_id}")
 
             try:
                 token = get_token()
@@ -773,14 +779,15 @@ def consulta():
             <div class="container">
             <h2 class="mb-3">🔍 Consulta manual de MLA</h2>
             <form method="POST" class="mb-4">
-                <div class="input-group mb-3">
-                <input type="text" class="form-control" name="item_id" placeholder="Ej: MLA123456" required>
+            <div class="input-group mb-3">
+                <input type="text" class="form-control" name="item_id" placeholder="Ej: MLA123456 o PROD12345" required>
                 <select class="form-select" name="mode">
-                    <option value="items" {"selected" if mode == "items" else ""}>Consulta Items</option>
-                    <option value="price_to_win" {"selected" if mode == "price_to_win" else ""}>Consulta Price to Win</option>
+                <option value="items" {"selected" if mode == "items" else ""}>Consulta Items</option>
+                <option value="price_to_win" {"selected" if mode == "price_to_win" else ""}>Consulta Price to Win</option>
+                <option value="catalog_cards" {"selected" if mode == "catalog_cards" else ""}>Consulta Items por Catálogo</option>
                 </select>
                 <button class="btn btn-primary" type="submit">Consultar</button>
-                </div>
+            </div>
             </form>
         """
     ]

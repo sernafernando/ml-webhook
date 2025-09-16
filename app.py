@@ -833,6 +833,39 @@ def debug_dbinfo():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/catalogByEan")
+def catalog_by_ean():
+    site = request.args.get("site", "MLA")
+    ean = request.args.get("ean")
+    if not ean:
+        return jsonify({"error": "Falta parámetro 'ean'"}), 400
+
+    try:
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"https://api.mercadolibre.com/catalog_products/search?site_id={site}&ean={ean}"
+        res = requests.get(url, headers=headers)
+        return jsonify(res.json()), res.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/listingsByCatalog")
+def listings_by_catalog():
+    site = request.args.get("site", "MLA")
+    catalog_id = request.args.get("catalog_id")
+    if not catalog_id:
+        return jsonify({"error": "Falta parámetro 'catalog_id'"}), 400
+
+    try:
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"https://api.mercadolibre.com/catalog_listings/search?site_id={site}&product_id={catalog_id}"
+        res = requests.get(url, headers=headers)
+        return jsonify(res.json()), res.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 3000))

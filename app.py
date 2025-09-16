@@ -919,6 +919,72 @@ def items_by_catalog():
         return final_html, res.status_code
     except Exception as e:
         return f"❌ Error: {e}", 500
+    
+@app.route("/itemsByCatalogCards")
+def items_by_catalog_cards():
+    product_id = request.args.get("product_id")
+    if not product_id:
+        return "Falta parámetro 'product_id'", 400
+
+    try:
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"https://api.mercadolibre.com/products/{product_id}/items"
+        res = requests.get(url, headers=headers)
+        data = res.json()
+
+        cards = []
+        for item in data.get("results", []):
+            item_id = item.get("item_id")
+            title = item_id  # no viene el título en este endpoint
+            price = item.get("price")
+            currency = item.get("currency_id", "")
+            seller_id = item.get("seller_id")
+            warranty = item.get("warranty", "—")
+            permalink = f"https://articulo.mercadolibre.com.ar/{item_id}"
+
+            card_html = f"""
+              <div class="col-md-4 mb-3">
+                <div class="card bg-dark text-light border-secondary h-100">
+                  <div class="card-body">
+                    <h5 class="card-title">
+                      <a href="{permalink}" target="_blank" class="text-decoration-none text-light">{item_id}</a>
+                    </h5>
+                    <p class="card-text">{currency} {price:,.0f}</p>
+                    <p class="card-text"><small>Seller: {seller_id}</small></p>
+                    <p class="card-text"><small>{warranty}</small></p>
+                  </div>
+                </div>
+              </div>
+            """
+            cards.append(card_html)
+
+        body = f"""
+        <div class="container">
+          <h3 class="mb-4">🛒 Publicaciones del catálogo {product_id}</h3>
+          <div class="row">
+            {''.join(cards)}
+          </div>
+        </div>
+        """
+
+        final_html = f"""
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Items by Catalog</title>
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+            <link rel="icon" href={FAVICON_DIR}>
+          </head>
+          <body class="bg-dark text-light p-3" data-bs-theme="dark">
+            {body}
+          </body>
+        </html>
+        """
+        return final_html, res.status_code
+
+    except Exception as e:
+        return f"❌ Error: {e}", 500
 
 # @app.route("/debug/token")
 # def debug_token():

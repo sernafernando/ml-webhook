@@ -833,6 +833,15 @@ def debug_dbinfo():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# Headers tipo navegador
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://www.mercadolibre.com.ar/",
+    "Origin": "https://www.mercadolibre.com.ar",
+}
+
+
 @app.route("/catalogByEan")
 def catalog_by_ean():
     site = request.args.get("site", "MLA")
@@ -842,10 +851,22 @@ def catalog_by_ean():
 
     try:
         token = get_token()
-        headers = {"Authorization": f"Bearer {token}"}
-        url = f"https://api.mercadolibre.com/products/search?site_id={site}&product_identifier={ean}"
-        res = requests.get(url, headers=headers)
-        data = res.json()
+        headers = {**BROWSER_HEADERS, "Authorization": f"Bearer {token}"}
+
+        # Intento oficial
+        url1 = f"https://api.mercadolibre.com/products/search?site_id={site}&product_identifier={ean}"
+        r1 = requests.get(url1, headers=headers)
+        if r1.ok:
+            data = r1.json()
+        else:
+            # Fallback: search por q=
+            url2 = f"https://api.mercadolibre.com/sites/{site}/search?q={ean}&limit=15"
+            r2 = requests.get(url2, headers=headers)
+            if not r2.ok:
+                return f"❌ Error {r2.status_code}: {r2.text}", r2.status_code
+            d2 = r2.json()
+            hit = next((res for res in d2.get("results", []) if res.get("catalog_product_id")), None)
+            data = {"results": [{"id": hit["catalog_product_id"]}]} if hit else {"results": []}
 
         body = render_json_as_html(data)
         final_html = f"""
@@ -855,7 +876,6 @@ def catalog_by_ean():
             <title>Catalog by EAN</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
             <link rel="icon" href={FAVICON_DIR}>
-            <link rel="apple-touch-icon" href={FAVICON_DIR}>
           </head>
           <body class="bg-dark text-light p-3" data-bs-theme="dark">
             <h3>📦 Catálogo por EAN</h3>
@@ -863,7 +883,7 @@ def catalog_by_ean():
           </body>
         </html>
         """
-        return final_html, res.status_code
+        return final_html, 200
     except Exception as e:
         return f"❌ Error: {e}", 500
 
@@ -872,15 +892,18 @@ def catalog_by_ean():
 def listings_by_catalog():
     site = request.args.get("site", "MLA")
     catalog_id = request.args.get("catalog_id")
+    limit = request.args.get("limit", "50")
+    offset = request.args.get("offset", "0")
     if not catalog_id:
         return "Falta parámetro 'catalog_id'", 400
 
     try:
         token = get_token()
-        headers = {"Authorization": f"Bearer {token}"}
-        url = f"https://api.mercadolibre.com/sites/{site}/search?catalog_product_id={catalog_id}"
-        res = requests.get(url, headers=headers)
-        data = res.json()
+        headers = {**BROWSER_HEADERS, "Authorization": f"Bearer {token}"}
+
+        url = f"https://api.mercadolibre.com/sites/{site}/search?catalog_product_id={catalog_id}&sort=price_asc&limit={limit}&offset={offset}"
+        r = requests.get(url, headers=headers)
+        data = r.json()
 
         body = render_json_as_html(data)
         final_html = f"""
@@ -890,7 +913,6 @@ def listings_by_catalog():
             <title>Listings by Catalog</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
             <link rel="icon" href={FAVICON_DIR}>
-            <link rel="apple-touch-icon" href={FAVICON_DIR}>
           </head>
           <body class="bg-dark text-light p-3" data-bs-theme="dark">
             <h3>🔍 Listings por catálogo</h3>
@@ -898,21 +920,21 @@ def listings_by_catalog():
           </body>
         </html>
         """
-        return final_html, res.status_code
+        return final_html, r.status_code
     except Exception as e:
         return f"❌ Error: {e}", 500
 
-@app.route("/debug/token")
-def debug_token():
-    try:
-        token = get_token()
-        return jsonify({
-            "access_token": token,
-            "expires_at": EXPIRATION,
-            "expires_in_seconds": int(EXPIRATION - time.time())
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# @app.route("/debug/token")
+# def debug_token():
+#     try:
+#         token = get_token()
+#         return jsonify({
+#             "access_token": token,
+#             "expires_at": EXPIRATION,
+#             "expires_in_seconds": int(EXPIRATION - time.time())
+#         })
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 3000))

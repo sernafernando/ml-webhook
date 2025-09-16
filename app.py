@@ -936,11 +936,22 @@ def items_by_catalog_cards():
         cards = []
         for item in data.get("results", []):
             item_id = item.get("item_id")
-            title = item_id  # no viene el título en este endpoint
             price = item.get("price")
             currency = item.get("currency_id", "")
-            seller_id = item.get("seller_id")
             warranty = item.get("warranty", "—")
+            seller_id = item.get("seller_id")
+
+            # 👉 consulta nickname del seller
+            nickname = seller_id
+            if seller_id:
+                try:
+                    u = f"https://api.mercadolibre.com/users/{seller_id}"
+                    r_user = requests.get(u, headers=headers)
+                    if r_user.ok:
+                        nickname = r_user.json().get("nickname", seller_id)
+                except Exception:
+                    pass
+
             permalink = f"https://articulo.mercadolibre.com.ar/{item_id}"
 
             card_html = f"""
@@ -951,7 +962,7 @@ def items_by_catalog_cards():
                       <a href="{permalink}" target="_blank" class="text-decoration-none text-light">{item_id}</a>
                     </h5>
                     <p class="card-text">{currency} {price:,.0f}</p>
-                    <p class="card-text"><small>Seller: {seller_id}</small></p>
+                    <p class="card-text"><small>Vendedor: {nickname}</small></p>
                     <p class="card-text"><small>{warranty}</small></p>
                   </div>
                 </div>
@@ -983,6 +994,38 @@ def items_by_catalog_cards():
         """
         return final_html, res.status_code
 
+    except Exception as e:
+        return f"❌ Error: {e}", 500
+
+    
+@app.route("/seller")
+def get_seller():
+    seller_id = request.args.get("id")
+    if not seller_id:
+        return "Falta parámetro 'id'", 400
+    try:
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"https://api.mercadolibre.com/users/{seller_id}"
+        res = requests.get(url, headers=headers)
+        data = res.json()
+
+        body = render_json_as_html(data)
+        html = f"""
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Seller {seller_id}</title>
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+            <link rel="icon" href={FAVICON_DIR}>
+          </head>
+          <body class="bg-dark text-light p-3" data-bs-theme="dark">
+            <h3>🛍️ Información del vendedor {seller_id}</h3>
+            {body}
+          </body>
+        </html>
+        """
+        return html, res.status_code
     except Exception as e:
         return f"❌ Error: {e}", 500
 

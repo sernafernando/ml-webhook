@@ -838,16 +838,34 @@ def catalog_by_ean():
     site = request.args.get("site", "MLA")
     ean = request.args.get("ean")
     if not ean:
-        return jsonify({"error": "Falta parámetro 'ean'"}), 400
+        return "Falta parámetro 'ean'", 400
 
     try:
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
         url = f"https://api.mercadolibre.com/products/search?site_id={site}&product_identifier={ean}"
         res = requests.get(url, headers=headers)
-        return jsonify(res.json()), res.status_code
+        data = res.json()
+
+        body = render_json_as_html(data)
+        final_html = f"""
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Catalog by EAN</title>
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+            <link rel="icon" href={FAVICON_DIR}>
+            <link rel="apple-touch-icon" href={FAVICON_DIR}>
+          </head>
+          <body class="bg-dark text-light p-3" data-bs-theme="dark">
+            <h3>📦 Catálogo por EAN</h3>
+            {body}
+          </body>
+        </html>
+        """
+        return final_html, res.status_code
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return f"❌ Error: {e}", 500
 
 
 @app.route("/listingsByCatalog")
@@ -855,16 +873,35 @@ def listings_by_catalog():
     site = request.args.get("site", "MLA")
     catalog_id = request.args.get("catalog_id")
     if not catalog_id:
-        return jsonify({"error": "Falta parámetro 'catalog_id'"}), 400
+        return "Falta parámetro 'catalog_id'", 400
 
     try:
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
-        url = f"https://api.mercadolibre.com/sites/${site}/search?catalog_product_id={catalog_id}"
+        url = f"https://api.mercadolibre.com/sites/{site}/search?catalog_product_id={catalog_id}"
         res = requests.get(url, headers=headers)
-        return jsonify(res.json()), res.status_code
+        data = res.json()
+
+        body = render_json_as_html(data)
+        final_html = f"""
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Listings by Catalog</title>
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+            <link rel="icon" href={FAVICON_DIR}>
+            <link rel="apple-touch-icon" href={FAVICON_DIR}>
+          </head>
+          <body class="bg-dark text-light p-3" data-bs-theme="dark">
+            <h3>🔍 Listings por catálogo</h3>
+            {body}
+          </body>
+        </html>
+        """
+        return final_html, res.status_code
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return f"❌ Error: {e}", 500
+
 
 
 if __name__ == "__main__":

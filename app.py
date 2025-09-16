@@ -888,39 +888,35 @@ def catalog_by_ean():
         return f"❌ Error: {e}", 500
 
 
-@app.route("/listingsByCatalog")
-def listings_by_catalog():
-    site = request.args.get("site", "MLA")
-    catalog_id = request.args.get("catalog_id")
-    limit = request.args.get("limit", "50")
-    offset = request.args.get("offset", "0")
-    if not catalog_id:
-        return "Falta parámetro 'catalog_id'", 400
+@app.route("/itemsByCatalog")
+def items_by_catalog():
+    product_id = request.args.get("product_id")
+    if not product_id:
+        return "Falta parámetro 'product_id'", 400
 
     try:
         token = get_token()
         headers = {**BROWSER_HEADERS, "Authorization": f"Bearer {token}"}
-
-        url = f"https://api.mercadolibre.com/sites/{site}/search?catalog_product_id={catalog_id}&sort=price_asc&limit={limit}&offset={offset}"
-        r = requests.get(url, headers=headers)
-        data = r.json()
+        url = f"https://api.mercadolibre.com/products/{product_id}/items"
+        res = requests.get(url, headers=headers)
+        data = res.json()
 
         body = render_json_as_html(data)
         final_html = f"""
         <html>
           <head>
             <meta charset="utf-8">
-            <title>Listings by Catalog</title>
+            <title>Items by Catalog</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
             <link rel="icon" href={FAVICON_DIR}>
           </head>
           <body class="bg-dark text-light p-3" data-bs-theme="dark">
-            <h3>🔍 Listings por catálogo</h3>
+            <h3>🛒 Publicaciones del catálogo</h3>
             {body}
           </body>
         </html>
         """
-        return final_html, r.status_code
+        return final_html, res.status_code
     except Exception as e:
         return f"❌ Error: {e}", 500
 

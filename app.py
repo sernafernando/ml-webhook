@@ -969,6 +969,13 @@ def items_by_catalog_cards():
         res_items = requests.get(url_items, headers=headers)
         data = res_items.json()
 
+        # ⚡ Si piden JSON plano, cortamos acá y devolvemos directo
+        if request.args.get("format") == "json":
+            return jsonify({
+                "product": product_data,
+                "items": data.get("results", [])
+            })
+
         cards = []
         for item in data.get("results", []):
             item_id = item.get("item_id")
@@ -1064,17 +1071,17 @@ def get_seller():
     except Exception as e:
         return f"❌ Error: {e}", 500
 
-# @app.route("/debug/token")
-# def debug_token():
-#     try:
-#         token = get_token()
-#         return jsonify({
-#             "access_token": token,
-#             "expires_at": EXPIRATION,
-#             "expires_in_seconds": int(EXPIRATION - time.time())
-#         })
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 500
+@app.route("/debug/token")
+def debug_token():
+    try:
+        token = get_token()
+        return jsonify({
+            "access_token": token,
+            "expires_at": EXPIRATION,
+            "expires_in_seconds": int(EXPIRATION - time.time())
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 3000))

@@ -680,8 +680,10 @@ def render_meli_resource():
             headers={"Authorization": f"Bearer {token}"}
         )
         data = res.json()
-        
-        
+
+        # Si piden JSON plano, devolver sin renderizar
+        if request.args.get("format") == "json":
+            return jsonify(data)
 
         body = render_ml_view(resource, data)
 

@@ -33,7 +33,7 @@ app = Flask(__name__)
 # Variables de entorno (todas con prefijo ML_)
 ML_CLIENT_ID = os.getenv("ML_CLIENT_ID")
 ML_CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET")
-ML_REDIRECT_URI = os.getenv("ML_REDIRECT_URI")
+ML_REDIRECT_URI = os.getenv("ML_REDIRECT_URI") or os.getenv("REDIRECT_URI")
 ML_REFRESH_TOKEN = os.getenv("ML_REFRESH_TOKEN")
 
 ACCESS_TOKEN = None

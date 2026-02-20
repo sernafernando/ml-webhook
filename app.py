@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 from psycopg2 import pool
 from contextlib import contextmanager
 
+load_dotenv()
+
 db_pool = pool.SimpleConnectionPool(
     1, 10,
     dsn=os.getenv("DATABASE_URL")
@@ -25,8 +27,6 @@ def db_cursor():
         conn.commit()
     finally:
         db_pool.putconn(conn)
-
-load_dotenv()
 
 app = Flask(__name__)
 

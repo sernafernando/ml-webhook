@@ -703,12 +703,10 @@ def render_meli_resource():
         """
         return final_html, 200
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print("❌ Error en renderizado:", e)
-        return "Error interno en renderizado", 500
-
-    except Exception as e:
-        print("❌ Error en renderizado:", e)
-        return "Error interno en renderizado", 500
+        return f"Error interno en renderizado: {e}", 500
 
 @app.route("/api/webhooks/topics", methods=["GET"])
 def get_topics():

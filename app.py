@@ -131,19 +131,62 @@ def fetch_and_store_preview(resource: str):
         headers = {"Authorization": f"Bearer {token}"}
 
         preview = {"resource": resource}
+        extra_data = {}
 
-        if resource.endswith("/price_to_win"):
+        # ----- SHIPMENTS -----
+        if resource.startswith("/shipments/"):
+            res_ship = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            ship_data = res_ship.json()
+
+            # item principal del envío
+            ship_items = ship_data.get("shipping_items") or []
+            first_item = ship_items[0] if ship_items else {}
+            item_desc = first_item.get("description", "")
+            item_id = first_item.get("id", "")
+
+            # destino
+            recv = ship_data.get("receiver_address") or {}
+            dest_city = recv.get("city", {}).get("name", "")
+            dest_state = recv.get("state", {}).get("name", "")
+
+            # shipping option
+            ship_opt = ship_data.get("shipping_option") or {}
+            eta = (ship_opt.get("estimated_delivery_time") or {}).get("date")
+
+            preview.update({
+                "title": item_desc,
+                "status": ship_data.get("status"),
+            })
+
+            extra_data = {
+                "substatus": ship_data.get("substatus"),
+                "item_id": item_id,
+                "logistic_type": ship_data.get("logistic_type"),
+                "shipping_method": ship_opt.get("name"),
+                "destination_city": dest_city,
+                "destination_state": dest_state,
+                "destination_lat": recv.get("latitude"),
+                "destination_lng": recv.get("longitude"),
+                "estimated_delivery": eta,
+                "order_id": ship_data.get("order_id"),
+                "tracking_number": ship_data.get("tracking_number"),
+                "receiver_name": recv.get("receiver_name"),
+            }
+
+        # ----- ITEMS / PRICE_TO_WIN -----
+        elif resource.endswith("/price_to_win"):
             item_id = resource.split("/")[2]
 
             # consulta 1: datos básicos del item (trae catalog_product_id)
             res_item = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=headers)
             item_data = res_item.json()
 
-            catalog_product_id = item_data.get("catalog_product_id")  # <<--- lo necesitamos
+            catalog_product_id = item_data.get("catalog_product_id")
             brand_name = next(
                 (a.get("value_name") for a in item_data.get("attributes", []) if a.get("id") == "BRAND"),
                 ""
             )
+            shipping = item_data.get("shipping") or {}
 
             preview.update({
                 "title": item_data.get("title", ""),
@@ -151,8 +194,14 @@ def fetch_and_store_preview(resource: str):
                 "currency_id": item_data.get("currency_id", ""),
                 "permalink": item_data.get("permalink", ""),
                 "catalog_product_id": catalog_product_id,
-                "brand": brand_name,   # <<--- ahora sí trae la marca
+                "brand": brand_name,
             })
+
+            extra_data = {
+                "logistic_type": shipping.get("logistic_type"),
+                "free_shipping": shipping.get("free_shipping"),
+                "shipping_mode": shipping.get("mode"),
+            }
 
             # consulta 2: price_to_win
             res_ptw = requests.get(f"https://api.mercadolibre.com/items/{item_id}/price_to_win?version=v2", headers=headers)
@@ -169,7 +218,7 @@ def fetch_and_store_preview(resource: str):
                 "winner_price": winner_price,
             })
 
-            # -------- NUEVO: campos de preview listos para el frontend --------
+            # campos de preview listos para el frontend
             if catalog_product_id and winner_id:
                 winner_url = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{winner_id}"
             else:
@@ -177,7 +226,6 @@ def fetch_and_store_preview(resource: str):
 
             preview["winner_url"] = winner_url
             preview["winner_price_fmt"] = _fmt_ars(winner_price)
-            # opcional: línea HTML ya armada (si querés inyectar tal cual en React)
             if winner_url:
                 preview["winner_line_html"] = (
                     f'🏆 Ganador: <a href="{winner_url}" target="_blank" rel="noopener noreferrer">{winner_id}</a>'
@@ -189,8 +237,8 @@ def fetch_and_store_preview(resource: str):
                     f' — {_fmt_ars(winner_price)}'
                 )
 
-        else:
-            # caso normal /items/{id} (sin cambios)
+        # ----- ITEMS COMUNES -----
+        elif resource.startswith("/items/"):
             res_item = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
             item_data = res_item.json()
 
@@ -198,6 +246,7 @@ def fetch_and_store_preview(resource: str):
                 (a.get("value_name") for a in item_data.get("attributes", []) if a.get("id") == "BRAND"),
                 ""
             )
+            shipping = item_data.get("shipping") or {}
 
             preview.update({
                 "title": item_data.get("title", ""),
@@ -207,14 +256,29 @@ def fetch_and_store_preview(resource: str):
                 "permalink": item_data.get("permalink", ""),
                 "catalog_product_id": item_data.get("catalog_product_id"),
                 "brand": brand_name,
-                # opcionalmente podrías setear winner_url/winner_line_html = None acá
             })
 
-        # --- Persistís SOLO lo que ya guardabas (no cambia el esquema) ---
+            extra_data = {
+                "logistic_type": shipping.get("logistic_type"),
+                "free_shipping": shipping.get("free_shipping"),
+                "shipping_mode": shipping.get("mode"),
+            }
+
+        # ----- CUALQUIER OTRO TOPIC (no romper) -----
+        else:
+            try:
+                res_generic = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+                generic_data = res_generic.json()
+                preview["title"] = generic_data.get("title") or generic_data.get("name") or ""
+                preview["status"] = generic_data.get("status")
+            except Exception:
+                pass
+
+        # --- Persistir preview + extra_data ---
         with db_cursor() as cur:
             cur.execute("""
-                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, winner, winner_price, status, brand, last_updated)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                INSERT INTO ml_previews (resource, title, price, currency_id, thumbnail, winner, winner_price, status, brand, extra_data, last_updated)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                 ON CONFLICT (resource) DO UPDATE SET
                     title = EXCLUDED.title,
                     price = EXCLUDED.price,
@@ -224,6 +288,7 @@ def fetch_and_store_preview(resource: str):
                     winner_price = EXCLUDED.winner_price,
                     status = EXCLUDED.status,
                     brand = EXCLUDED.brand,
+                    extra_data = EXCLUDED.extra_data,
                     last_updated = NOW();
             """, (
                 preview["resource"],
@@ -234,7 +299,8 @@ def fetch_and_store_preview(resource: str):
                 preview.get("winner"),
                 preview.get("winner_price"),
                 preview.get("status"),
-                preview.get("brand"),          # 👈 nuevo
+                preview.get("brand"),
+                Json(extra_data),
             ))
             
 
@@ -620,7 +686,7 @@ def get_webhooks():
                 )
                 SELECT
                     w.payload,
-                    p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, w.received_at,p.brand
+                    p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, w.received_at, p.brand, p.extra_data
                 FROM latest
                 JOIN webhooks w
                   ON w.resource = latest.resource
@@ -652,6 +718,7 @@ def get_webhooks():
                 "winner_price": row[6],
                 "status": row[7],
                 "brand": row[9],
+                "extra_data": row[10] or {},
             }
 
             # Adjuntamos preview siempre (si no hay, vendrá con None en sus campos)

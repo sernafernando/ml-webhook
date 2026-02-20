@@ -10,6 +10,7 @@ from psycopg2.extras import Json
 from zoneinfo import ZoneInfo
 from psycopg2 import pool
 from contextlib import contextmanager
+import threading
 
 load_dotenv()
 
@@ -43,6 +44,40 @@ DEBUG_WEBHOOK = os.getenv("DEBUG_WEBHOOK", "0") == "1"
 
 
 FAVICON_DIR = "https://ml-webhook.gaussonline.com.ar/assets/white-g-BfxDaKwI.png"
+
+# ---- Rate-limited ML API wrapper ----
+_ml_api_lock = threading.Lock()
+_ml_api_min_interval = 0.15  # mínimo 150ms entre requests (~6.6 req/s)
+_ml_api_last_call = 0.0
+
+def ml_api_get(url, headers=None, params=None, max_retries=3):
+    """GET a la API de ML con rate limiting y retry automático en 429."""
+    global _ml_api_last_call
+
+    for attempt in range(max_retries):
+        # throttle: esperar si estamos muy rápido
+        with _ml_api_lock:
+            now = time.time()
+            wait = _ml_api_min_interval - (now - _ml_api_last_call)
+            if wait > 0:
+                time.sleep(wait)
+            _ml_api_last_call = time.time()
+
+        res = requests.get(url, headers=headers, params=params)
+
+        if res.status_code == 429:
+            # retry-after header o backoff exponencial
+            retry_after = int(res.headers.get("Retry-After", 0))
+            backoff = max(retry_after, (2 ** attempt) * 1.5)
+            print(f"⚠️ 429 Rate Limited (intento {attempt+1}/{max_retries}), esperando {backoff:.1f}s...")
+            time.sleep(backoff)
+            continue
+
+        return res
+
+    # si agotamos retries, devolver la última respuesta (429)
+    print(f"❌ Rate limit agotado tras {max_retries} intentos para {url}")
+    return res
 
 def refresh_token():
     global ACCESS_TOKEN, EXPIRATION
@@ -135,7 +170,7 @@ def fetch_and_store_preview(resource: str):
 
         # ----- SHIPMENTS -----
         if resource.startswith("/shipments/"):
-            res_ship = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            res_ship = ml_api_get(f"https://api.mercadolibre.com{resource}", headers=headers)
             ship_data = res_ship.json()
 
             # item principal del envío
@@ -178,7 +213,7 @@ def fetch_and_store_preview(resource: str):
             item_id = resource.split("/")[2]
 
             # consulta 1: datos básicos del item (trae catalog_product_id)
-            res_item = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=headers)
+            res_item = ml_api_get(f"https://api.mercadolibre.com/items/{item_id}", headers=headers)
             item_data = res_item.json()
 
             catalog_product_id = item_data.get("catalog_product_id")
@@ -204,7 +239,7 @@ def fetch_and_store_preview(resource: str):
             }
 
             # consulta 2: price_to_win
-            res_ptw = requests.get(f"https://api.mercadolibre.com/items/{item_id}/price_to_win?version=v2", headers=headers)
+            res_ptw = ml_api_get(f"https://api.mercadolibre.com/items/{item_id}/price_to_win?version=v2", headers=headers)
             ptw_data = res_ptw.json()
 
             winner_id = (ptw_data.get("winner") or {}).get("item_id")
@@ -239,7 +274,7 @@ def fetch_and_store_preview(resource: str):
 
         # ----- ITEMS COMUNES -----
         elif resource.startswith("/items/"):
-            res_item = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            res_item = ml_api_get(f"https://api.mercadolibre.com{resource}", headers=headers)
             item_data = res_item.json()
 
             brand_name = next(
@@ -267,7 +302,7 @@ def fetch_and_store_preview(resource: str):
         # ----- CUALQUIER OTRO TOPIC (no romper) -----
         else:
             try:
-                res_generic = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+                res_generic = ml_api_get(f"https://api.mercadolibre.com{resource}", headers=headers)
                 generic_data = res_generic.json()
                 preview["title"] = generic_data.get("title") or generic_data.get("name") or ""
                 preview["status"] = generic_data.get("status")
@@ -334,7 +369,7 @@ def render_ml_view(resource, data):
 
             try:
                 token = get_token()
-                res_item = requests.get(
+                res_item = ml_api_get(
                     f"https://api.mercadolibre.com/items/{item_id}",
                     headers={"Authorization": f"Bearer {token}"}
                 )
@@ -474,7 +509,7 @@ def render_ml_view(resource, data):
     elif resource.startswith("/seller-promotions/"):
         token = get_token()
         url = f"https://api.mercadolibre.com{resource}?app_version=v2"
-        res = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+        res = ml_api_get(url, headers={"Authorization": f"Bearer {token}"})
 
         if res.status_code != 200:
             html_parts.append(
@@ -491,7 +526,7 @@ def render_ml_view(resource, data):
         item_id = offer_data.get("item_id")
         if item_id:
             try:
-                ptw_res = requests.get(
+                ptw_res = ml_api_get(
                     f"https://api.mercadolibre.com/items/{item_id}/price_to_win?version=v2",
                     headers={"Authorization": f"Bearer {token}"}
                 )
@@ -524,7 +559,7 @@ def make_item_card(item_id, ml_url, ml_data=None):
     try:
         if not ml_data:
             token = get_token()
-            res = requests.get(
+            res = ml_api_get(
                 f"https://api.mercadolibre.com/items/{item_id}",
                 headers={"Authorization": f"Bearer {token}"}
             )
@@ -759,7 +794,7 @@ def render_meli_resource():
         if "/price_to_win" in resource:
             resource += ("&" if "?" in resource else "?") + "version=v2"
         
-        res = requests.get(
+        res = ml_api_get(
             f"https://api.mercadolibre.com{resource}",
             headers={"Authorization": f"Bearer {token}"}
         )
@@ -844,7 +879,7 @@ def consulta():
             try:
                 token = get_token()
                 headers = {"Authorization": f"Bearer {token}"}
-                res = requests.get(f"https://api.mercadolibre.com{resource}", headers=headers)
+                res = ml_api_get(f"https://api.mercadolibre.com{resource}", headers=headers)
                 data = res.json()
             except Exception as e:
                 error = str(e)
@@ -946,13 +981,13 @@ def catalog_by_ean():
 
         # Intento oficial
         url1 = f"https://api.mercadolibre.com/products/search?site_id={site}&product_identifier={ean}"
-        r1 = requests.get(url1, headers=headers)
+        r1 = ml_api_get(url1, headers=headers)
         if r1.ok:
             data = r1.json()
         else:
             # Fallback: search por q=
             url2 = f"https://api.mercadolibre.com/sites/{site}/search?q={ean}&limit=15"
-            r2 = requests.get(url2, headers=headers)
+            r2 = ml_api_get(url2, headers=headers)
             if not r2.ok:
                 return f"❌ Error {r2.status_code}: {r2.text}", r2.status_code
             d2 = r2.json()
@@ -989,7 +1024,7 @@ def items_by_catalog():
         token = get_token()
         headers = {**BROWSER_HEADERS, "Authorization": f"Bearer {token}"}
         url = f"https://api.mercadolibre.com/products/{product_id}/items"
-        res = requests.get(url, headers=headers)
+        res = ml_api_get(url, headers=headers)
         data = res.json()
 
         # ⚡ si piden json plano devolvemos directo
@@ -1027,7 +1062,7 @@ def items_by_catalog_cards():
 
         # --- Card general con datos del producto ---
         url_product = f"https://api.mercadolibre.com/products/{product_id}"
-        res_product = requests.get(url_product, headers=headers)
+        res_product = ml_api_get(url_product, headers=headers)
         product_data = res_product.json()
         title = product_data.get("name", f"Producto {product_id}")
         thumbnail = (product_data.get("pictures") or [{}])[0].get("url", "")
@@ -1050,7 +1085,7 @@ def items_by_catalog_cards():
 
         # --- Publicaciones asociadas ---
         url_items = f"https://api.mercadolibre.com/products/{product_id}/items"
-        res_items = requests.get(url_items, headers=headers)
+        res_items = ml_api_get(url_items, headers=headers)
         data = res_items.json()
 
         # ⚡ Si piden JSON plano, cortamos acá y devolvemos directo
@@ -1072,7 +1107,7 @@ def items_by_catalog_cards():
             nickname = seller_id
             try:
                 u = f"https://api.mercadolibre.com/users/{seller_id}"
-                r_user = requests.get(u, headers=headers)
+                r_user = ml_api_get(u, headers=headers)
                 if r_user.ok:
                     nickname = r_user.json().get("nickname", seller_id)
             except Exception:
@@ -1133,7 +1168,7 @@ def get_seller():
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
         url = f"https://api.mercadolibre.com/users/{seller_id}"
-        res = requests.get(url, headers=headers)
+        res = ml_api_get(url, headers=headers)
         data = res.json()
 
         body = render_json_as_html(data)

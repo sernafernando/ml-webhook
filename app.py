@@ -1101,8 +1101,8 @@ def debug_token():
         return jsonify({"error": str(e)}), 500
 
 def save_token_to_db(token_data: dict):
-    expires_in = int(token_data.get("expires_in", 0))
-    # guardamos expires_at con margen (60s) como ya hacés
+    expires_in = int(token_data.get("expires_in", 0))  # <-- tiene que existir antes del execute
+
     with db_cursor() as cur:
         cur.execute("""
             UPDATE ml_tokens
@@ -1120,7 +1120,7 @@ def save_token_to_db(token_data: dict):
             token_data.get("token_type"),
             token_data.get("scope"),
             token_data.get("user_id"),
-            expires_in,
+            expires_in,  # <-- ahora sí existe
         ))
 
 def load_token_from_db():
@@ -1143,4 +1143,5 @@ def load_token_from_db():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
+
 

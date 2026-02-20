@@ -47,31 +47,47 @@ FAVICON_DIR = "https://ml-webhook.gaussonline.com.ar/assets/white-g-BfxDaKwI.png
 def refresh_token():
     global ACCESS_TOKEN, EXPIRATION
 
-    if not ML_REFRESH_TOKEN:
-        raise Exception("❌ No hay ML_REFRESH_TOKEN en variables de entorno")
+    tok = load_token_from_db() or {}
+    refresh = tok.get("refresh_token") or ML_REFRESH_TOKEN
+    if not refresh:
+        raise Exception("❌ No hay refresh_token ni en DB ni en variables de entorno")
 
     url = "https://api.mercadolibre.com/oauth/token"
     payload = {
         "grant_type": "refresh_token",
         "client_id": ML_CLIENT_ID,
         "client_secret": ML_CLIENT_SECRET,
-        "refresh_token": ML_REFRESH_TOKEN
+        "refresh_token": refresh
     }
 
     response = requests.post(url, data=payload)
     data = response.json()
 
     if "access_token" in data:
+        # persistimos en DB (incluye refresh nuevo si ML lo manda)
+        save_token_to_db(data)
+
         ACCESS_TOKEN = data["access_token"]
-        EXPIRATION = time.time() + data["expires_in"] - 60
-        print("✅ Nuevo access_token obtenido.")
+        EXPIRATION = time.time() + int(data.get("expires_in", 0)) - 60
+        print("✅ Nuevo access_token obtenido (DB).")
     else:
         print("❌ Error al refrescar token:", data)
         raise Exception("No se pudo refrescar el access_token")
-
+        
 def get_token():
+    global ACCESS_TOKEN, EXPIRATION
+
+    # si en memoria está vencido, mirá DB
     if ACCESS_TOKEN is None or time.time() >= EXPIRATION:
+        tok = load_token_from_db()
+        if tok and tok.get("access_token") and time.time() < tok.get("expires_epoch", 0):
+            ACCESS_TOKEN = tok["access_token"]
+            EXPIRATION = tok["expires_epoch"]
+            return ACCESS_TOKEN
+
+        # DB no sirve o está vencido => refrescar
         refresh_token()
+
     return ACCESS_TOKEN
 
 def _fmt_ars(val):
@@ -498,18 +514,19 @@ def callback():
         "redirect_uri": ML_REDIRECT_URI,
     }
 
-    try:
-        response = requests.post(token_url, data=payload)
-        token_data = response.json()
-        print("🔑 Token recibido:", token_data)
+    response = requests.post(token_url, data=payload)
+    token_data = response.json()
+    print("🔑 Token recibido:", token_data)
 
-        if "access_token" in token_data:
-            return "Token obtenido correctamente ✅", 200
-        else:
-            return jsonify(token_data), 400
+    if "access_token" in token_data:
+        save_token_to_db(token_data)
+        # opcional: actualizar cache local
+        global ACCESS_TOKEN, EXPIRATION
+        ACCESS_TOKEN = token_data["access_token"]
+        EXPIRATION = time.time() + int(token_data.get("expires_in", 0)) - 60
+        return "Token obtenido y guardado ✅", 200
 
-    except Exception as e:
-        return f"Error: {str(e)}", 500
+    return jsonify(token_data), 400
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -1083,6 +1100,47 @@ def debug_token():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def save_token_to_db(token_data: dict):
+    expires_in = int(token_data.get("expires_in", 0))
+    # guardamos expires_at con margen (60s) como ya hacés
+    with db_cursor() as cur:
+        cur.execute("""
+            UPDATE ml_tokens
+               SET access_token = %s,
+                   refresh_token = COALESCE(%s, refresh_token),
+                   token_type = %s,
+                   scope = %s,
+                   user_id = %s,
+                   expires_at = NOW() + (%s || ' seconds')::interval - interval '60 seconds',
+                   updated_at = NOW()
+             WHERE id = 1
+        """, (
+            token_data.get("access_token"),
+            token_data.get("refresh_token"),
+            token_data.get("token_type"),
+            token_data.get("scope"),
+            token_data.get("user_id"),
+            expires_in,
+        ))
+
+def load_token_from_db():
+    with db_cursor() as cur:
+        cur.execute("""
+            SELECT access_token, refresh_token, EXTRACT(EPOCH FROM expires_at) AS expires_epoch
+            FROM ml_tokens
+            WHERE id = 1
+        """)
+        row = cur.fetchone()
+        if not row:
+            return None
+        access_token, refresh_token, expires_epoch = row
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_epoch": float(expires_epoch) if expires_epoch is not None else 0.0
+        }
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
+

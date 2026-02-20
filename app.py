@@ -798,6 +798,12 @@ def render_meli_resource():
             f"https://api.mercadolibre.com{resource}",
             headers={"Authorization": f"Bearer {token}"}
         )
+
+        # Si la respuesta de ML no es JSON (ej: ZPL texto plano), devolver crudo
+        ml_content_type = res.headers.get("content-type", "")
+        if "application/json" not in ml_content_type:
+            return res.text, res.status_code, {"Content-Type": ml_content_type}
+
         data = res.json()
 
         # Si piden JSON plano, devolver sin renderizar

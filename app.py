@@ -193,11 +193,21 @@ def fetch_and_store_preview(resource: str):
                 "status": ship_data.get("status"),
             })
 
+            # shipping_method_id: identifica método de envío (ej: "515282" = Turbo)
+            raw_method_id = ship_opt.get("shipping_method_id") if isinstance(ship_opt, dict) else None
+            shipping_method_id = str(raw_method_id) if raw_method_id is not None else None
+
+            # tags: lista de etiquetas del shipment (ej: ["turbo"])
+            raw_tags = ship_data.get("tags")
+            ship_tags = raw_tags if isinstance(raw_tags, list) else []
+
             extra_data = {
                 "substatus": ship_data.get("substatus"),
                 "item_id": item_id,
                 "logistic_type": ship_data.get("logistic_type"),
                 "shipping_method": ship_opt.get("name"),
+                "shipping_method_id": shipping_method_id,
+                "tags": ship_tags,
                 "destination_city": dest_city,
                 "destination_state": dest_state,
                 "destination_lat": recv.get("latitude"),

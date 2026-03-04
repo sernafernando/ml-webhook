@@ -309,6 +309,135 @@ def fetch_and_store_preview(resource: str):
                 "shipping_mode": shipping.get("mode"),
             }
 
+        # ----- CLAIMS (post-purchase) -----
+        elif resource.startswith("/post-purchase/v1/claims/"):
+            # Extraer claim_id del resource
+            # resource viene como: /post-purchase/v1/claims/5281510459
+            claim_id = resource.rstrip("/").split("/")[-1]
+
+            # 1) GET claim principal
+            res_claim = ml_api_get(
+                f"https://api.mercadolibre.com/post-purchase/v1/claims/{claim_id}",
+                headers=headers,
+            )
+            claim_data = res_claim.json() if res_claim.status_code == 200 else {}
+
+            # 2) GET detail (problema legible, título, responsable, due_date)
+            claim_detail = {}
+            try:
+                res_detail = ml_api_get(
+                    f"https://api.mercadolibre.com/post-purchase/v1/claims/{claim_id}/detail",
+                    headers=headers,
+                )
+                if res_detail.status_code == 200:
+                    claim_detail = res_detail.json()
+            except Exception:
+                pass
+
+            # 3) GET reason detail (texto legible del motivo exacto)
+            reason_id = claim_data.get("reason_id", "")
+            reason_data = {}
+            try:
+                if reason_id:
+                    res_reason = ml_api_get(
+                        f"https://api.mercadolibre.com/post-purchase/v1/claims/reasons/{reason_id}",
+                        headers=headers,
+                    )
+                    if res_reason.status_code == 200:
+                        reason_data = res_reason.json()
+            except Exception:
+                pass
+
+            # reason_id → categoría legible (PNR / PDD / CS) como fallback
+            if reason_id.startswith("PNR"):
+                reason_category = "Producto No Recibido"
+            elif reason_id.startswith("PDD"):
+                reason_category = "Producto Diferente o Defectuoso"
+            elif reason_id.startswith("CS"):
+                reason_category = "Compra Cancelada"
+            else:
+                reason_category = reason_id
+
+            # reason_data.detail es el texto EXACTO: "El producto llegó roto o con piezas dañadas"
+            reason_detail = reason_data.get("detail") or ""
+            reason_name = reason_data.get("name") or ""
+            reason_label = reason_detail or reason_category
+
+            # Resoluciones esperadas y triage del engine de ML
+            reason_settings = reason_data.get("settings") or {}
+            expected_resolutions = reason_settings.get("expected_resolutions") or []
+            triage_tags = reason_settings.get("rules_engine_triage") or []
+
+            # Título para preview: reason_detail > detail.problem > reason_category
+            detail_problem = claim_detail.get("problem") or ""
+            preview_title = reason_detail or detail_problem or reason_category or f"Reclamo #{claim_id}"
+
+            # Players: extraer buyer y seller info
+            players = claim_data.get("players") or []
+            complainant = next((p for p in players if p.get("role") == "complainant"), {})
+            respondent = next((p for p in players if p.get("role") == "respondent"), {})
+
+            # Acciones pendientes del seller (respondent)
+            seller_actions = respondent.get("available_actions") or []
+            mandatory_actions = [a for a in seller_actions if a.get("mandatory")]
+            nearest_due_date = None
+            for a in seller_actions:
+                dd = a.get("due_date")
+                if dd and (nearest_due_date is None or dd < nearest_due_date):
+                    nearest_due_date = dd
+
+            # Resolution (si cerrado)
+            resolution = claim_data.get("resolution") or {}
+
+            preview.update({
+                "title": preview_title,
+                "status": claim_data.get("status"),
+            })
+
+            extra_data = {
+                "claim_id": claim_data.get("id"),
+                "claim_type": claim_data.get("type"),
+                "claim_stage": claim_data.get("stage"),
+                "claim_version": claim_data.get("claim_version"),
+                "resource_type": claim_data.get("resource"),
+                "resource_id": claim_data.get("resource_id"),
+                "reason_id": reason_id,
+                "reason_category": reason_category,
+                "reason_label": reason_label,
+                "reason_name": reason_name,
+                "reason_detail": reason_detail,
+                "expected_resolutions": expected_resolutions,
+                "triage_tags": triage_tags,
+                "fulfilled": claim_data.get("fulfilled"),
+                "quantity_type": claim_data.get("quantity_type"),
+                "claimed_quantity": claim_data.get("claimed_quantity"),
+                # Players
+                "complainant_user_id": complainant.get("user_id"),
+                "complainant_type": complainant.get("type"),
+                "respondent_user_id": respondent.get("user_id"),
+                "respondent_type": respondent.get("type"),
+                # Acciones del seller
+                "seller_actions": [a.get("action") for a in seller_actions],
+                "mandatory_actions": [a.get("action") for a in mandatory_actions],
+                "nearest_due_date": nearest_due_date,
+                # Detail legible
+                "detail_title": claim_detail.get("title"),
+                "detail_description": claim_detail.get("description"),
+                "detail_problem": detail_problem,
+                "action_responsible": claim_detail.get("action_responsible"),
+                "detail_due_date": claim_detail.get("due_date"),
+                # Resolución (si existe)
+                "resolution_reason": resolution.get("reason"),
+                "resolution_date": resolution.get("date_created"),
+                "resolution_benefited": resolution.get("benefited"),
+                "resolution_closed_by": resolution.get("closed_by"),
+                "resolution_coverage": resolution.get("applied_coverage"),
+                # Fechas
+                "date_created": claim_data.get("date_created"),
+                "last_updated": claim_data.get("last_updated"),
+                "site_id": claim_data.get("site_id"),
+            }
+
         # ----- CUALQUIER OTRO TOPIC (no romper) -----
         else:
             try:
@@ -515,6 +644,265 @@ def render_ml_view(resource, data):
 
         if item_id and ml_url:
             html_parts.append(make_item_card(item_id, ml_url, data))
+
+    # -------------------------------
+    # Caso: /post-purchase/v1/claims/
+    # -------------------------------
+    elif resource.startswith("/post-purchase/v1/claims/"):
+        claim_id = resource.rstrip("/").split("/")[-1]
+
+        try:
+            token = get_token()
+            headers = {"Authorization": f"Bearer {token}"}
+
+            # GET claim principal
+            res_claim = ml_api_get(
+                f"https://api.mercadolibre.com/post-purchase/v1/claims/{claim_id}",
+                headers=headers,
+            )
+            claim = res_claim.json() if res_claim.status_code == 200 else data
+
+            # GET detail
+            claim_detail = {}
+            try:
+                res_detail = ml_api_get(
+                    f"https://api.mercadolibre.com/post-purchase/v1/claims/{claim_id}/detail",
+                    headers=headers,
+                )
+                if res_detail.status_code == 200:
+                    claim_detail = res_detail.json()
+            except Exception:
+                pass
+
+            # Parsear datos clave
+            status = claim.get("status", "—")
+            stage = claim.get("stage", "—")
+            claim_type = claim.get("type", "—")
+            reason_id = claim.get("reason_id", "")
+            resource_type = claim.get("resource", "—")
+            resource_id = claim.get("resource_id", "—")
+            fulfilled = claim.get("fulfilled")
+            quantity_type = claim.get("quantity_type", "—")
+            claimed_qty = claim.get("claimed_quantity", "—")
+
+            # GET reason detail (motivo exacto legible)
+            reason_data = {}
+            try:
+                if reason_id:
+                    res_reason = ml_api_get(
+                        f"https://api.mercadolibre.com/post-purchase/v1/claims/reasons/{reason_id}",
+                        headers=headers,
+                    )
+                    if res_reason.status_code == 200:
+                        reason_data = res_reason.json()
+            except Exception:
+                pass
+
+            reason_detail_text = reason_data.get("detail") or ""
+            reason_name = reason_data.get("name") or ""
+            reason_settings = reason_data.get("settings") or {}
+            expected_resolutions = reason_settings.get("expected_resolutions") or []
+            triage_tags = reason_settings.get("rules_engine_triage") or []
+
+            # Reason category (fallback genérico) + icon
+            if reason_id.startswith("PNR"):
+                reason_category = "Producto No Recibido"
+                reason_icon = "📦❌"
+            elif reason_id.startswith("PDD"):
+                reason_category = "Producto Diferente o Defectuoso"
+                reason_icon = "🔧"
+            elif reason_id.startswith("CS"):
+                reason_category = "Compra Cancelada"
+                reason_icon = "🚫"
+            else:
+                reason_category = reason_id
+                reason_icon = "📋"
+
+            # reason_detail_text es el texto EXACTO del comprador, mucho más útil
+            reason_label = reason_detail_text or reason_category
+
+            # Status badge
+            if status == "opened":
+                status_badge = "<span class='badge bg-warning text-dark'>⏳ Abierto</span>"
+            elif status == "closed":
+                status_badge = "<span class='badge bg-secondary'>✅ Cerrado</span>"
+            else:
+                status_badge = f"<span class='badge bg-info'>{status}</span>"
+
+            # Stage badge
+            stage_colors = {
+                "claim": ("bg-primary", "Reclamo"),
+                "dispute": ("bg-danger", "Disputa / Mediación"),
+                "recontact": ("bg-warning text-dark", "Recontacto"),
+                "stale": ("bg-secondary", "Estancado"),
+                "none": ("bg-dark", "N/A"),
+            }
+            sc, sl = stage_colors.get(stage, ("bg-info", stage))
+            stage_badge = f"<span class='badge {sc}'>{sl}</span>"
+
+            # Type badge
+            type_labels = {
+                "mediations": "Mediación",
+                "return": "Devolución",
+                "fulfillment": "Fulfillment",
+                "ml_case": "Caso ML",
+                "cancel_sale": "Cancelación (vendedor)",
+                "cancel_purchase": "Cancelación (comprador)",
+                "change": "Cambio",
+                "service": "Servicio",
+            }
+            type_label = type_labels.get(claim_type, claim_type)
+
+            # Players
+            players = claim.get("players") or []
+            complainant = next((p for p in players if p.get("role") == "complainant"), {})
+            respondent = next((p for p in players if p.get("role") == "respondent"), {})
+
+            # Acciones del seller
+            seller_actions = respondent.get("available_actions") or []
+            actions_html = ""
+            if seller_actions:
+                action_items = []
+                for a in seller_actions:
+                    action_name = a.get("action", "—")
+                    mandatory = a.get("mandatory", False)
+                    due = a.get("due_date", "")
+                    icon = "🔴" if mandatory else "🟡"
+                    due_str = f" <small class='text-muted'>vence: {due}</small>" if due else ""
+                    action_items.append(f"<li class='mb-1'>{icon} <code>{action_name}</code>{' <span class=\"badge bg-danger\">obligatoria</span>' if mandatory else ''}{due_str}</li>")
+                actions_html = f"<ul class='mb-0 ps-3'>{''.join(action_items)}</ul>"
+            else:
+                actions_html = "<em class='text-muted'>Sin acciones pendientes</em>"
+
+            # Detail card
+            detail_problem = claim_detail.get("problem", "")
+            detail_title = claim_detail.get("title", "")
+            detail_desc = claim_detail.get("description", "")
+            action_responsible = claim_detail.get("action_responsible", "")
+            detail_due = claim_detail.get("due_date", "")
+
+            responsible_labels = {
+                "seller": "🏪 Vendedor",
+                "buyer": "🛒 Comprador",
+                "mediator": "⚖️ Mercado Libre",
+            }
+            responsible_str = responsible_labels.get(action_responsible, action_responsible)
+
+            # Resolution
+            resolution = claim.get("resolution") or {}
+            resolution_html = ""
+            if resolution:
+                res_reason = resolution.get("reason", "—")
+                res_date = resolution.get("date_created", "—")
+                res_benefited = ", ".join(resolution.get("benefited") or ["—"])
+                res_closed_by = resolution.get("closed_by", "—")
+                res_coverage = resolution.get("applied_coverage")
+                coverage_str = "✅ Sí" if res_coverage else "❌ No" if res_coverage is not None else "—"
+                resolution_html = f"""
+                <div class="card bg-dark text-light border-success mt-3">
+                  <div class="card-header">📋 Resolución</div>
+                  <div class="card-body">
+                    <div class="row">
+                      <div class="col-md-6"><strong>Motivo:</strong> <code>{res_reason}</code></div>
+                      <div class="col-md-6"><strong>Fecha:</strong> {res_date}</div>
+                    </div>
+                    <div class="row mt-2">
+                      <div class="col-md-4"><strong>Beneficiado:</strong> {res_benefited}</div>
+                      <div class="col-md-4"><strong>Cerrado por:</strong> {res_closed_by}</div>
+                      <div class="col-md-4"><strong>Cobertura ML:</strong> {coverage_str}</div>
+                    </div>
+                  </div>
+                </div>
+                """
+
+            # Order link (si el resource es una orden)
+            resource_link = ""
+            if resource_type == "order" and resource_id:
+                resource_link = f"<a href='/api/ml/render?resource=/orders/{resource_id}' target='_blank' class='text-info'>Ver orden #{resource_id}</a>"
+            elif resource_type == "shipment" and resource_id:
+                resource_link = f"<a href='/api/ml/render?resource=/shipments/{resource_id}' target='_blank' class='text-info'>Ver envío #{resource_id}</a>"
+            else:
+                resource_link = f"<code>{resource_type}: {resource_id}</code>"
+
+            html_parts.append(f"""
+            <div class="mb-3">
+              <h3>{reason_icon} Reclamo #{claim.get('id', claim_id)}</h3>
+              <div class="d-flex gap-2 flex-wrap mb-3">
+                {status_badge} {stage_badge}
+                <span class="badge bg-info">{type_label}</span>
+              </div>
+            </div>
+
+            {'<div class="alert alert-danger border-0"><h5 class="mb-1">' + reason_icon + ' ' + reason_detail_text + '</h5><small class="text-muted">' + reason_category + ' — ' + reason_id + '</small></div>' if reason_detail_text else ('<div class="alert alert-warning"><strong>' + reason_icon + ' ' + reason_category + '</strong> <small class="text-muted">(' + reason_id + ')</small></div>')}
+
+            {'<div class="alert alert-secondary border-0 mt-0"><em>' + detail_problem + '</em></div>' if detail_problem and detail_problem != reason_detail_text else ''}
+
+            <div class="row g-3">
+              <!-- Info principal -->
+              <div class="col-md-6">
+                <div class="card bg-dark text-light border-info h-100">
+                  <div class="card-header">📄 Datos del reclamo</div>
+                  <div class="card-body">
+                    <div><strong>Motivo:</strong> {reason_icon} {reason_label} <small class="text-muted">({reason_id})</small></div>
+                    {'<div class="mt-1"><strong>Nombre interno:</strong> <code>' + reason_name + '</code></div>' if reason_name else ''}
+                    <div class="mt-1"><strong>Recurso:</strong> {resource_link}</div>
+                    <div class="mt-1"><strong>Entregado:</strong> {'✅ Sí' if fulfilled else '❌ No' if fulfilled is not None else '—'}</div>
+                    <div class="mt-1"><strong>Cantidad reclamada:</strong> {claimed_qty} ({quantity_type})</div>
+                    <div class="mt-1"><strong>Versión claim:</strong> {claim.get('claim_version', '—')}</div>
+                    {'<hr><h6 class="mt-2">🏷️ Clasificación RMA</h6><div><strong>Triage:</strong> ' + ', '.join(f'<span class="badge bg-secondary">{t}</span>' for t in triage_tags) + '</div>' if triage_tags else ''}
+                    {'<div class="mt-1"><strong>Resoluciones esperadas:</strong> ' + ', '.join(f'<span class="badge bg-outline-info border border-info">{r}</span>' for r in expected_resolutions) + '</div>' if expected_resolutions else ''}
+                    <hr>
+                    <div><strong>Creado:</strong> {claim.get('date_created', '—')}</div>
+                    <div><strong>Última actualización:</strong> {claim.get('last_updated', '—')}</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Responsable y acciones -->
+              <div class="col-md-6">
+                <div class="card bg-dark text-light border-warning h-100">
+                  <div class="card-header">⚡ Acciones pendientes</div>
+                  <div class="card-body">
+                    {'<div class="mb-2"><strong>Responsable actual:</strong> ' + responsible_str + '</div>' if action_responsible else ''}
+                    {'<div class="mb-2"><strong>Estado:</strong> ' + detail_title + '</div>' if detail_title else ''}
+                    {'<div class="mb-2"><em>' + detail_desc + '</em></div>' if detail_desc else ''}
+                    {('<div class="mb-3"><strong>Fecha límite:</strong> <span class="text-warning">' + detail_due + '</span></div>') if detail_due else ''}
+                    <hr>
+                    <h6>Acciones del vendedor:</h6>
+                    {actions_html}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Players -->
+            <div class="row g-3 mt-1">
+              <div class="col-md-6">
+                <div class="card bg-dark text-light border-secondary">
+                  <div class="card-body py-2">
+                    <strong>🛒 Reclamante:</strong> {complainant.get('type', '—')} — User ID: <code>{complainant.get('user_id', '—')}</code>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-6">
+                <div class="card bg-dark text-light border-secondary">
+                  <div class="card-body py-2">
+                    <strong>🏪 Respondente:</strong> {respondent.get('type', '—')} — User ID: <code>{respondent.get('user_id', '—')}</code>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {resolution_html}
+            """)
+
+        except Exception as e:
+            html_parts.append(f"<div class='alert alert-danger'>❌ Error al cargar claim {claim_id}: {e}</div>")
+
+        # Agregar JSON crudo debajo
+        html_parts.append("<h5 class='mt-4'>📦 JSON crudo del claim</h5>")
+        html_parts.append(render_json_as_html(data))
+        return "".join(html_parts)
 
     elif resource.startswith("/seller-promotions/"):
         token = get_token()

@@ -242,11 +242,38 @@ def fetch_and_store_preview(resource: str):
                 "brand": brand_name,
             })
 
+            # sale_terms: extraer ALL_METHODS_REBATE_PRICE
+            rebate_term = next(
+                (t for t in item_data.get("sale_terms") or [] if t.get("id") == "ALL_METHODS_REBATE_PRICE"),
+                {}
+            )
+            rebate_value_name = rebate_term.get("value_name")
+            rebate_value_struct_number = (rebate_term.get("value_struct") or {}).get("number")
+            # values es un array, tomar el primero si existe
+            rebate_values_first = (rebate_term.get("values") or [{}])[0] if rebate_term.get("values") else {}
+            rebate_values_name = rebate_values_first.get("name")
+            rebate_values_struct_number = (rebate_values_first.get("struct") or {}).get("number")
+
+            # precio de rebate: preferir value_struct.number, fallback a values[0].struct.number
+            rebate_price = rebate_value_struct_number or rebate_values_struct_number
+            free_shipping = shipping.get("free_shipping")
+            free_shipping_error = False
+            if free_shipping and rebate_price is not None:
+                try:
+                    free_shipping_error = float(rebate_price) < 33000
+                except (ValueError, TypeError):
+                    pass
+
             extra_data = {
                 "logistic_type": shipping.get("logistic_type"),
-                "free_shipping": shipping.get("free_shipping"),
+                "free_shipping": free_shipping,
                 "shipping_mode": shipping.get("mode"),
                 "shipping_tags": shipping.get("tags") or [],
+                "rebate_value_name": rebate_value_name,
+                "rebate_value_struct_number": rebate_value_struct_number,
+                "rebate_values_name": rebate_values_name,
+                "rebate_values_struct_number": rebate_values_struct_number,
+                "free_shipping_error": free_shipping_error,
             }
 
             # consulta 2: price_to_win
@@ -304,11 +331,36 @@ def fetch_and_store_preview(resource: str):
                 "brand": brand_name,
             })
 
+            # sale_terms: extraer ALL_METHODS_REBATE_PRICE
+            rebate_term = next(
+                (t for t in item_data.get("sale_terms") or [] if t.get("id") == "ALL_METHODS_REBATE_PRICE"),
+                {}
+            )
+            rebate_value_name = rebate_term.get("value_name")
+            rebate_value_struct_number = (rebate_term.get("value_struct") or {}).get("number")
+            rebate_values_first = (rebate_term.get("values") or [{}])[0] if rebate_term.get("values") else {}
+            rebate_values_name = rebate_values_first.get("name")
+            rebate_values_struct_number = (rebate_values_first.get("struct") or {}).get("number")
+
+            rebate_price = rebate_value_struct_number or rebate_values_struct_number
+            free_shipping = shipping.get("free_shipping")
+            free_shipping_error = False
+            if free_shipping and rebate_price is not None:
+                try:
+                    free_shipping_error = float(rebate_price) < 33000
+                except (ValueError, TypeError):
+                    pass
+
             extra_data = {
                 "logistic_type": shipping.get("logistic_type"),
-                "free_shipping": shipping.get("free_shipping"),
+                "free_shipping": free_shipping,
                 "shipping_mode": shipping.get("mode"),
                 "shipping_tags": shipping.get("tags") or [],
+                "rebate_value_name": rebate_value_name,
+                "rebate_value_struct_number": rebate_value_struct_number,
+                "rebate_values_name": rebate_values_name,
+                "rebate_values_struct_number": rebate_values_struct_number,
+                "free_shipping_error": free_shipping_error,
             }
 
         # ----- CLAIMS (post-purchase) -----

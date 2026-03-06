@@ -53,6 +53,11 @@ Thumbs.db
 *~
 
 # =========================
+# Prompts (contexto para otros repos)
+# =========================
+PROMPT_*.md
+
+# =========================
 # Environment / Secrets
 # =========================
 .env

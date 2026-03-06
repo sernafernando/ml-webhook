@@ -246,6 +246,7 @@ def fetch_and_store_preview(resource: str):
                 "logistic_type": shipping.get("logistic_type"),
                 "free_shipping": shipping.get("free_shipping"),
                 "shipping_mode": shipping.get("mode"),
+                "shipping_tags": shipping.get("tags") or [],
             }
 
             # consulta 2: price_to_win
@@ -307,6 +308,7 @@ def fetch_and_store_preview(resource: str):
                 "logistic_type": shipping.get("logistic_type"),
                 "free_shipping": shipping.get("free_shipping"),
                 "shipping_mode": shipping.get("mode"),
+                "shipping_tags": shipping.get("tags") or [],
             }
 
         # ----- CLAIMS (post-purchase) -----

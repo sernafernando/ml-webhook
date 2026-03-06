@@ -41,6 +41,7 @@ ACCESS_TOKEN = None
 EXPIRATION = 0
 
 DEBUG_WEBHOOK = os.getenv("DEBUG_WEBHOOK", "0") == "1"
+FREE_SHIPPING_MIN_PRICE = float(os.getenv("FREE_SHIPPING_MIN_PRICE", "33000"))
 
 
 FAVICON_DIR = "https://ml-webhook.gaussonline.com.ar/assets/white-g-BfxDaKwI.png"
@@ -260,7 +261,7 @@ def fetch_and_store_preview(resource: str):
             free_shipping_error = False
             if free_shipping and rebate_price is not None:
                 try:
-                    free_shipping_error = float(rebate_price) < 33000
+                    free_shipping_error = float(rebate_price) < FREE_SHIPPING_MIN_PRICE
                 except (ValueError, TypeError):
                     pass
 
@@ -347,7 +348,7 @@ def fetch_and_store_preview(resource: str):
             free_shipping_error = False
             if free_shipping and rebate_price is not None:
                 try:
-                    free_shipping_error = float(rebate_price) < 33000
+                    free_shipping_error = float(rebate_price) < FREE_SHIPPING_MIN_PRICE
                 except (ValueError, TypeError):
                     pass
 

@@ -14,6 +14,38 @@ import threading
 
 load_dotenv()
 
+# ── Redis for SSE notifications (best-effort, never blocks webhook) ──
+_redis_client = None
+try:
+    import redis as _redis_mod
+    _redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    _redis_client = _redis_mod.Redis.from_url(_redis_url, decode_responses=True, socket_connect_timeout=2)
+    _redis_client.ping()
+    print(f"✅ Redis conectado para SSE ({_redis_url})")
+except Exception as _redis_err:
+    _redis_client = None
+    print(f"⚠️ Redis no disponible — SSE deshabilitado: {_redis_err}")
+
+
+def sse_notify(channel: str, data: dict = None):
+    """
+    Publish an SSE event to Redis pub/sub.
+    Fire-and-forget: swallows all errors.
+    Channel format: sse:{channel} (matches pricing-app SSEConnectionManager pattern).
+    """
+    if _redis_client is None:
+        return
+    try:
+        import json as _json
+        payload = _json.dumps({
+            "channel": channel,
+            "data": data or {},
+            "timestamp": datetime.now(ZoneInfo("UTC")).isoformat(),
+        })
+        _redis_client.publish(f"sse:{channel}", payload)
+    except Exception:
+        pass  # Best-effort — never block the webhook
+
 db_pool = pool.SimpleConnectionPool(
     1, 10,
     dsn=os.getenv("DATABASE_URL")
@@ -532,6 +564,27 @@ def fetch_and_store_preview(resource: str):
                 Json(extra_data),
             ))
             
+
+        # ── SSE notifications (best-effort, per resource type) ──
+        if resource.startswith("/shipments/"):
+            sse_notify("shipments:webhook", {
+                "resource": resource,
+                "status": preview.get("status"),
+            })
+        elif resource.startswith("/items/"):
+            # Notify free-shipping channel when items change
+            # (FreeShippingBadge will re-fetch the count)
+            if extra_data.get("free_shipping_error") is not None:
+                sse_notify("free-shipping:count", {
+                    "resource": resource,
+                    "free_shipping_error": extra_data.get("free_shipping_error"),
+                })
+        elif resource.startswith("/post-purchase/v1/claims/"):
+            sse_notify("claims:updated", {
+                "resource": resource,
+                "status": preview.get("status"),
+                "claim_id": extra_data.get("claim_id"),
+            })
 
         print("🔍 Preview generado:", preview)
         return preview

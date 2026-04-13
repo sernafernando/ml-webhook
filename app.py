@@ -48,7 +48,7 @@ def sse_notify(channel: str, data: dict = None):
         pass  # Best-effort — never block the webhook
 
 db_pool = pool.SimpleConnectionPool(
-    1, 10,
+    1, 5,
     dsn=os.getenv("DATABASE_URL")
 )
 
@@ -1215,7 +1215,7 @@ def webhook():
         }
         inserted_count = 0
 
-        # Insert ÚNICO: exactamente el resource recibido
+        # Insert + snapshot en una sola conexión (evita presión sobre el pool)
         try:
             with db_cursor() as cur:
                 cur.execute(
@@ -1229,7 +1229,7 @@ def webhook():
                         evento.get("user_id"),
                         resource,
                         Json(evento),
-                        evento.get("_id"),  # UUID válido requerido por tu esquema
+                        evento.get("_id"),
                     ),
                 )
                 results["insert_original"] = {
@@ -1242,31 +1242,30 @@ def webhook():
                     with _topics_cache_lock:
                         _topics_cache["value"] = None
                         _topics_cache["expires_at"] = 0.0
+
+                # Snapshot latest por (topic, resource), best-effort
+                if inserted_count > 0 and resource:
+                    try:
+                        cur.execute(
+                            """
+                            INSERT INTO webhook_latest (topic, resource, webhook_id, received_at, payload)
+                            VALUES (%s, %s, %s, NOW(), %s)
+                            ON CONFLICT (topic, resource) DO UPDATE SET
+                                webhook_id = EXCLUDED.webhook_id,
+                                received_at = EXCLUDED.received_at,
+                                payload = EXCLUDED.payload
+                            """,
+                            (
+                                evento.get("topic"),
+                                resource,
+                                evento.get("_id"),
+                                Json(evento),
+                            ),
+                        )
+                    except Exception as e:
+                        results["errors"].append(f"upsert_webhook_latest: {e}")
         except Exception as e:
             results["errors"].append(f"insert_original: {e}")
-
-        # Snapshot latest por (topic, resource), best-effort (no invalida webhook)
-        try:
-            if inserted_count > 0 and resource:
-                with db_cursor() as cur:
-                    cur.execute(
-                        """
-                        INSERT INTO webhook_latest (topic, resource, webhook_id, received_at, payload)
-                        VALUES (%s, %s, %s, NOW(), %s)
-                        ON CONFLICT (topic, resource) DO UPDATE SET
-                            webhook_id = EXCLUDED.webhook_id,
-                            received_at = EXCLUDED.received_at,
-                            payload = EXCLUDED.payload
-                        """,
-                        (
-                            evento.get("topic"),
-                            resource,
-                            evento.get("_id"),
-                            Json(evento),
-                        ),
-                    )
-        except Exception as e:
-            results["errors"].append(f"upsert_webhook_latest: {e}")
 
         # Refrescar preview del MISMO resource (no rompe el webhook si falla)
         try:

@@ -5,10 +5,11 @@ import psycopg2
 from psycopg2.extras import Json
 from dotenv import load_dotenv
 
-# cargar variables de entorno (.env con DATABASE_URL)
+# cargar variables de entorno
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Migraciones/operaciones admin usan conexión directa a Postgres (sin PgBouncer)
+DATABASE_URL = os.getenv("DATABASE_ADMIN_URL") or os.getenv("DATABASE_URL")
 WEBHOOKS_DIR = os.path.join(os.path.dirname(__file__), "webhooks")
 
 def extract_json_objects(text):

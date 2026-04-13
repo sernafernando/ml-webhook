@@ -2,6 +2,7 @@ from flask import Flask, request, redirect, jsonify, send_from_directory
 import os
 import requests
 import json
+import base64
 from dotenv import load_dotenv
 from datetime import datetime
 import time
@@ -74,6 +75,16 @@ EXPIRATION = 0
 
 DEBUG_WEBHOOK = os.getenv("DEBUG_WEBHOOK", "0") == "1"
 FREE_SHIPPING_MIN_PRICE = float(os.getenv("FREE_SHIPPING_MIN_PRICE", "33000"))
+WEBHOOKS_DEFAULT_LIMIT = int(os.getenv("WEBHOOKS_DEFAULT_LIMIT", "100"))
+WEBHOOKS_MAX_LIMIT = int(os.getenv("WEBHOOKS_MAX_LIMIT", "500"))
+WEBHOOK_PREVIEW_ASYNC = os.getenv("WEBHOOK_PREVIEW_ASYNC", "0") == "1"
+WEBHOOKS_CURSOR_MODE = os.getenv("WEBHOOKS_CURSOR_MODE", "0") == "1"
+WEBHOOK_TOPICS_CACHE_TTL = float(os.getenv("WEBHOOK_TOPICS_CACHE_TTL", "10"))
+PREVIEW_QUEUE_KEY = os.getenv("PREVIEW_QUEUE_KEY", "queue:preview:resources")
+PREVIEW_DEAD_QUEUE_KEY = os.getenv("PREVIEW_DEAD_QUEUE_KEY", "queue:preview:dead")
+
+_topics_cache = {"value": None, "expires_at": 0.0}
+_topics_cache_lock = threading.Lock()
 
 
 FAVICON_DIR = "https://ml-webhook.gaussonline.com.ar/assets/white-g-BfxDaKwI.png"
@@ -111,6 +122,56 @@ def ml_api_get(url, headers=None, params=None, max_retries=3):
     # si agotamos retries, devolver la última respuesta (429)
     print(f"❌ Rate limit agotado tras {max_retries} intentos para {url}")
     return res
+
+
+def _clamp_limit(raw_limit):
+    try:
+        limit = int(raw_limit) if raw_limit is not None else WEBHOOKS_DEFAULT_LIMIT
+    except (TypeError, ValueError):
+        limit = WEBHOOKS_DEFAULT_LIMIT
+
+    if limit < 1:
+        limit = 1
+    if limit > WEBHOOKS_MAX_LIMIT:
+        limit = WEBHOOKS_MAX_LIMIT
+    return limit
+
+
+def _encode_webhooks_cursor(received_at: datetime, resource: str):
+    raw = f"{received_at.isoformat()}|{resource}"
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("utf-8")
+
+
+def _decode_webhooks_cursor(cursor: str):
+    decoded = base64.urlsafe_b64decode(cursor.encode("utf-8")).decode("utf-8")
+    ts_raw, resource = decoded.split("|", 1)
+    return datetime.fromisoformat(ts_raw), resource
+
+
+def _enqueue_preview_job(resource: str, attempt: int = 1):
+    if _redis_client is None:
+        return False, "redis_unavailable"
+    try:
+        payload = json.dumps({
+            "resource": resource,
+            "attempt": attempt,
+            "enqueued_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+        })
+        _redis_client.rpush(PREVIEW_QUEUE_KEY, payload)
+        return True, None
+    except Exception as err:
+        return False, str(err)
+
+
+def _run_preview_in_background(resource: str):
+    def _target():
+        try:
+            fetch_and_store_preview(resource)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
 
 def refresh_token():
     global ACCESS_TOKEN, EXPIRATION
@@ -1149,6 +1210,7 @@ def webhook():
             "preview_refreshed": False,
             "errors": [],
         }
+        inserted_count = 0
 
         # Insert ÚNICO: exactamente el resource recibido
         try:
@@ -1171,13 +1233,49 @@ def webhook():
                     "rowcount": cur.rowcount,
                     "webhook_id": evento.get("_id"),
                 }
+                inserted_count = cur.rowcount
+
+                if inserted_count > 0:
+                    with _topics_cache_lock:
+                        _topics_cache["value"] = None
+                        _topics_cache["expires_at"] = 0.0
         except Exception as e:
             results["errors"].append(f"insert_original: {e}")
+
+        # Snapshot latest por (topic, resource), best-effort (no invalida webhook)
+        try:
+            if inserted_count > 0 and resource:
+                with db_cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO webhook_latest (topic, resource, webhook_id, received_at, payload)
+                        VALUES (%s, %s, %s, NOW(), %s)
+                        ON CONFLICT (topic, resource) DO UPDATE SET
+                            webhook_id = EXCLUDED.webhook_id,
+                            received_at = EXCLUDED.received_at,
+                            payload = EXCLUDED.payload
+                        """,
+                        (
+                            evento.get("topic"),
+                            resource,
+                            evento.get("_id"),
+                            Json(evento),
+                        ),
+                    )
+        except Exception as e:
+            results["errors"].append(f"upsert_webhook_latest: {e}")
 
         # Refrescar preview del MISMO resource (no rompe el webhook si falla)
         try:
             if resource:
-                fetch_and_store_preview(resource)
+                if WEBHOOK_PREVIEW_ASYNC:
+                    enqueued, enqueue_err = _enqueue_preview_job(resource)
+                    if not enqueued:
+                        _run_preview_in_background(resource)
+                        if enqueue_err:
+                            results["errors"].append(f"enqueue_preview_job: {enqueue_err}")
+                else:
+                    fetch_and_store_preview(resource)
                 results["preview_refreshed"] = True
         except Exception as e:
             results["errors"].append(f"fetch_and_store_preview: {e}")
@@ -1200,44 +1298,148 @@ def get_webhooks():
         if not topic:
             return jsonify({"error": "Falta parámetro 'topic'"}), 400
 
-        limit = int(request.args.get("limit", 500))
-        offset = int(request.args.get("offset", 0))
+        limit = _clamp_limit(request.args.get("limit"))
+        raw_offset = request.args.get("offset", "0")
+        try:
+            offset = max(0, int(raw_offset))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Parámetro 'offset' inválido"}), 400
 
-        # 1) Total correcto: cantidad de resources únicos (último evento por resource dentro del topic)
-        with db_cursor() as cur:
-            cur.execute("""
-                WITH latest AS (
-                    SELECT resource, MAX(received_at) AS max_received
-                    FROM webhooks
-                    WHERE topic = %s
-                    GROUP BY resource
-                )
-                SELECT COUNT(*) FROM latest
-            """, (topic,))
-            total = cur.fetchone()[0]
+        cursor_raw = request.args.get("cursor")
+        cursor_pair = None
+        if cursor_raw:
+            try:
+                cursor_pair = _decode_webhooks_cursor(cursor_raw)
+            except Exception:
+                return jsonify({"error": "Parámetro 'cursor' inválido"}), 400
 
-        # 2) Filas a listar (último evento por resource) + preview por el MISMO resource
+        use_cursor_mode = WEBHOOKS_CURSOR_MODE or bool(cursor_pair)
+
+        # Preferimos snapshot table. Si no existe (migración pendiente), caemos al query legado.
+        snapshot_available = True
+        try:
+            with db_cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM webhook_latest WHERE topic = %s", (topic,))
+                total = cur.fetchone()[0]
+        except Exception:
+            snapshot_available = False
+            with db_cursor() as cur:
+                cur.execute("""
+                    WITH latest AS (
+                        SELECT resource, MAX(received_at) AS max_received
+                        FROM webhooks
+                        WHERE topic = %s
+                        GROUP BY resource
+                    )
+                    SELECT COUNT(*) FROM latest
+                """, (topic,))
+                total = cur.fetchone()[0]
+
         with db_cursor() as cur:
-            cur.execute("""
-                WITH latest AS (
-                    SELECT resource, MAX(received_at) AS max_received
-                    FROM webhooks
-                    WHERE topic = %s
-                    GROUP BY resource
-                )
-                SELECT
-                    w.payload,
-                    p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, w.received_at, p.brand, p.extra_data
-                FROM latest
-                JOIN webhooks w
-                  ON w.resource = latest.resource
-                 AND w.received_at = latest.max_received
-                LEFT JOIN ml_previews p
-                  ON p.resource = w.resource        
-                ORDER BY w.received_at DESC
-                LIMIT %s OFFSET %s
-            """, (topic, limit, offset))
-            rows_db = cur.fetchall()  # 👈 leemos TODO adentro del with
+            if snapshot_available:
+                if use_cursor_mode:
+                    if cursor_pair:
+                        cur.execute("""
+                            SELECT
+                                wl.payload,
+                                p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, wl.received_at, p.brand, p.extra_data,
+                                wl.resource
+                            FROM webhook_latest wl
+                            LEFT JOIN ml_previews p ON p.resource = wl.resource
+                            WHERE wl.topic = %s
+                              AND (wl.received_at, wl.resource) < (%s, %s)
+                            ORDER BY wl.received_at DESC, wl.resource DESC
+                            LIMIT %s
+                        """, (topic, cursor_pair[0], cursor_pair[1], limit))
+                    else:
+                        cur.execute("""
+                            SELECT
+                                wl.payload,
+                                p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, wl.received_at, p.brand, p.extra_data,
+                                wl.resource
+                            FROM webhook_latest wl
+                            LEFT JOIN ml_previews p ON p.resource = wl.resource
+                            WHERE wl.topic = %s
+                            ORDER BY wl.received_at DESC, wl.resource DESC
+                            LIMIT %s
+                        """, (topic, limit))
+                else:
+                    cur.execute("""
+                        SELECT
+                            wl.payload,
+                            p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, wl.received_at, p.brand, p.extra_data,
+                            wl.resource
+                        FROM webhook_latest wl
+                        LEFT JOIN ml_previews p ON p.resource = wl.resource
+                        WHERE wl.topic = %s
+                        ORDER BY wl.received_at DESC, wl.resource DESC
+                        LIMIT %s OFFSET %s
+                    """, (topic, limit, offset))
+            else:
+                if use_cursor_mode:
+                    if cursor_pair:
+                        cur.execute("""
+                            WITH latest AS (
+                                SELECT resource, MAX(received_at) AS max_received
+                                FROM webhooks
+                                WHERE topic = %s
+                                GROUP BY resource
+                            )
+                            SELECT
+                                w.payload,
+                                p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, w.received_at, p.brand, p.extra_data,
+                                w.resource
+                            FROM latest
+                            JOIN webhooks w
+                              ON w.resource = latest.resource
+                             AND w.received_at = latest.max_received
+                            LEFT JOIN ml_previews p ON p.resource = w.resource
+                            WHERE (w.received_at, w.resource) < (%s, %s)
+                            ORDER BY w.received_at DESC, w.resource DESC
+                            LIMIT %s
+                        """, (topic, cursor_pair[0], cursor_pair[1], limit))
+                    else:
+                        cur.execute("""
+                            WITH latest AS (
+                                SELECT resource, MAX(received_at) AS max_received
+                                FROM webhooks
+                                WHERE topic = %s
+                                GROUP BY resource
+                            )
+                            SELECT
+                                w.payload,
+                                p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, w.received_at, p.brand, p.extra_data,
+                                w.resource
+                            FROM latest
+                            JOIN webhooks w
+                              ON w.resource = latest.resource
+                             AND w.received_at = latest.max_received
+                            LEFT JOIN ml_previews p ON p.resource = w.resource
+                            ORDER BY w.received_at DESC, w.resource DESC
+                            LIMIT %s
+                        """, (topic, limit))
+                else:
+                    cur.execute("""
+                        WITH latest AS (
+                            SELECT resource, MAX(received_at) AS max_received
+                            FROM webhooks
+                            WHERE topic = %s
+                            GROUP BY resource
+                        )
+                        SELECT
+                            w.payload,
+                            p.title, p.price, p.currency_id, p.thumbnail, p.winner, p.winner_price, p.status, w.received_at, p.brand, p.extra_data,
+                            w.resource
+                        FROM latest
+                        JOIN webhooks w
+                          ON w.resource = latest.resource
+                         AND w.received_at = latest.max_received
+                        LEFT JOIN ml_previews p ON p.resource = w.resource
+                        ORDER BY w.received_at DESC, w.resource DESC
+                        LIMIT %s OFFSET %s
+                    """, (topic, limit, offset))
+
+            rows_db = cur.fetchall()
 
         # 3) Construcción de respuesta (ya fuera del with: el cursor está cerrado)
         rows = []
@@ -1268,13 +1470,21 @@ def get_webhooks():
             payload["received_at"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
             rows.append(payload)
 
+        next_cursor = None
+        if use_cursor_mode and rows_db:
+            last_received_at = rows_db[-1][8]
+            last_resource = rows_db[-1][11]
+            next_cursor = _encode_webhooks_cursor(last_received_at, last_resource)
+
         return jsonify({
             "topic": topic,
             "events": rows,
             "pagination": {
                 "limit": limit,
                 "offset": offset,
-                "total": total
+                "total": total,
+                "mode": "cursor" if use_cursor_mode else "offset",
+                "next_cursor": next_cursor,
             }
         })
 
@@ -1342,6 +1552,12 @@ def render_meli_resource():
 @app.route("/api/webhooks/topics", methods=["GET"])
 def get_topics():
     try:
+        now = time.time()
+        if WEBHOOK_TOPICS_CACHE_TTL > 0:
+            with _topics_cache_lock:
+                if _topics_cache["value"] is not None and now < _topics_cache["expires_at"]:
+                    return jsonify(_topics_cache["value"])
+
         with db_cursor() as cur:
             cur.execute("""
                 SELECT topic, COUNT(*)
@@ -1350,6 +1566,12 @@ def get_topics():
                 ORDER BY COUNT(*) DESC
             """)
             topics = [{"topic": row[0], "count": row[1]} for row in cur.fetchall()]
+
+        if WEBHOOK_TOPICS_CACHE_TTL > 0:
+            with _topics_cache_lock:
+                _topics_cache["value"] = topics
+                _topics_cache["expires_at"] = time.time() + WEBHOOK_TOPICS_CACHE_TTL
+
         return jsonify(topics)
     except Exception as e:
         print("❌ Error obteniendo topics:", e)

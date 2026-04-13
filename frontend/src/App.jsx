@@ -5,14 +5,17 @@ import { FaMoon, FaSun } from 'react-icons/fa';
 function App() {
   const [theme, setTheme] = useState('dark');
   const [filter, setFilter] = useState('');
-  const [limit, setLimit] = useState(5000);
+  const [limit, setLimit] = useState(100);
   const [offset, setOffset] = useState(0);
+  const [cursor, setCursor] = useState(null);
+  const [cursorHistory, setCursorHistory] = useState([]);
+  const [isTabVisible, setIsTabVisible] = useState(!document.hidden);
   const [topics, setTopics] = useState([]);
   const [selectedTopic, setSelectedTopic] = useState(
     localStorage.getItem("selectedTopic") || null
   );
   const [events, setEvents] = useState([]);
-  const [pagination, setPagination] = useState({ limit: 5000, offset: 0, total: 0 });
+  const [pagination, setPagination] = useState({ limit: 100, offset: 0, total: 0, mode: 'offset', next_cursor: null });
   const [loadingPreview, setLoadingPreview] = useState({});
 
   // tema
@@ -31,6 +34,14 @@ function App() {
       localStorage.setItem("selectedTopic", selectedTopic);
     }
   }, [selectedTopic]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      setIsTabVisible(!document.hidden);
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
 
   // cargar topics
   useEffect(() => {
@@ -51,24 +62,47 @@ function App() {
     fetchTopics();
   }, []); // solo al montar
 
+  const fetchEventsPage = async ({ cursorOverride = cursor, offsetOverride = offset } = {}) => {
+    if (!selectedTopic) return;
+
+    const params = new URLSearchParams({
+      topic: selectedTopic,
+      limit: String(limit),
+    });
+
+    const useCursorMode = (pagination?.mode === 'cursor') || cursorOverride !== null;
+    if (useCursorMode) {
+      if (cursorOverride) params.set('cursor', cursorOverride);
+    } else {
+      params.set('offset', String(offsetOverride));
+    }
+
+    try {
+      const res = await fetch(`/api/webhooks?${params.toString()}`);
+      const data = await res.json();
+      setEvents(data.events || []);
+      setPagination(data.pagination || { limit, offset: offsetOverride, total: 0, mode: 'offset', next_cursor: null });
+    } catch (err) {
+      console.error("Error al cargar eventos:", err);
+    }
+  };
+
+  const refreshCurrentPage = async () => {
+    await fetchEventsPage();
+  };
+
   // cargar eventos del topic seleccionado
   useEffect(() => {
-    const fetchEvents = async () => {
-      if (!selectedTopic) return;
-      try {
-        const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
-        const data = await res.json();
-        setEvents(data.events || []);
-        setPagination(data.pagination || { limit, offset, total: 0 });
-      } catch (err) {
-        console.error("Error al cargar eventos:", err);
-      }
-    };
+    fetchEventsPage();
 
-    fetchEvents();
-    const interval = setInterval(fetchEvents, 5000);
+    if (!isTabVisible) return;
+
+    const interval = setInterval(() => {
+      fetchEventsPage();
+    }, 8000);
+
     return () => clearInterval(interval);
-  }, [selectedTopic, limit, offset]);
+  }, [selectedTopic, limit, offset, cursor, isTabVisible, pagination.mode]);
 
   const fmtARS = (val) => {
     if (val === null || val === undefined || val === "") return "—";
@@ -236,7 +270,7 @@ function App() {
 
   return (
     <div className={`App ${theme}-theme`}>
-      <h1 className="app-title">📦 Webhooks Recibidos</h1>
+      <h1 className="app-title" data-testid="home-webhooks-title">📦 Webhooks Recibidos</h1>
 
       {/* selector de topic + filtro */}
       {topics.length > 0 && (
@@ -244,14 +278,16 @@ function App() {
           <div className="row g-2 align-items-center">
             <div className="col-md-6">
               <label className="form-label fw-bold">Topic</label>
-              <select
-                className="form-select"
-                value={selectedTopic || ""}
-                onChange={e => { 
-                  setSelectedTopic(e.target.value); 
-                  setOffset(0); 
-                }}
-              >
+                <select
+                  className="form-select"
+                  value={selectedTopic || ""}
+                  onChange={e => { 
+                    setSelectedTopic(e.target.value); 
+                    setOffset(0);
+                    setCursor(null);
+                    setCursorHistory([]);
+                  }}
+                >
                 {topics.map(t => (
                   <option key={t.topic} value={t.topic}>
                     {topicLabels[t.topic] || t.topic} ({t.count})
@@ -266,6 +302,7 @@ function App() {
                 <input
                   type="text"
                   className="form-control"
+                  data-testid="resource-filter-input"
                   placeholder="Ej: MLA123..."
                   value={filter}
                   onChange={e => setFilter(e.target.value)}
@@ -313,7 +350,7 @@ function App() {
                         style={{ width: '50px', height: '50px', objectFit: 'cover' }}
                       />
                       <div>
-                        <strong>{evt.db_preview.title}</strong><br />
+                        <strong data-testid={`preview-title-${evt.resource}`}>{evt.db_preview.title}</strong><br />
 
                         {/* ⬇️ NUEVO: mostrar la marca si viene */}
                         {evt.db_preview.brand ? (
@@ -372,10 +409,7 @@ function App() {
                         onClick={async () => {
                           setLoadingPreview(prev => ({ ...prev, [evt.resource]: true }));
                           await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
-                          const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
-                          const data = await res.json();
-                          setEvents(data.events || []);
-                          setPagination(data.pagination || { limit, offset, total: 0 });
+                          await refreshCurrentPage();
                           setLoadingPreview(prev => ({ ...prev, [evt.resource]: false }));
                         }}
                         disabled={loadingPreview[evt.resource]}
@@ -395,10 +429,7 @@ function App() {
                         onClick={async () => {
                           setLoadingPreview(prev => ({ ...prev, [evt.resource]: true }));
                           await fetch(`/api/ml/preview?resource=${encodeURIComponent(evt.resource)}`, { method: "POST" });
-                          const res = await fetch(`/api/webhooks?topic=${selectedTopic}&limit=${limit}&offset=${offset}`);
-                          const data = await res.json();
-                          setEvents(data.events || []);
-                          setPagination(data.pagination || { limit, offset, total: 0 });
+                          await refreshCurrentPage();
                           setLoadingPreview(prev => ({ ...prev, [evt.resource]: false }));
                         }}
                         disabled={loadingPreview[evt.resource]}
@@ -428,30 +459,50 @@ function App() {
                 className="form-select form-select-sm"
                 style={{ width: "auto" }}
                 value={limit}
-                onChange={e => { setOffset(0); setLimit(Number(e.target.value)); }}
+                onChange={e => {
+                  setOffset(0);
+                  setCursor(null);
+                  setCursorHistory([]);
+                  setLimit(Number(e.target.value));
+                }}
               >
                 <option value={100}>100</option>
                 <option value={500}>500</option>
-                <option value={1000}>1000</option>
-                <option value={5000}>5000</option>
               </select>
             </div>
 
             {/* Paginación Bootstrap */}
             <nav>
               <ul className="pagination pagination-sm mb-0">
-                <li className={`page-item ${offset === 0 ? "disabled" : ""}`}>
+                <li className={`page-item ${(pagination.mode === 'cursor' ? cursorHistory.length === 0 : offset === 0) ? "disabled" : ""}`}>
                   <button
                     className="page-link"
-                    onClick={() => setOffset(Math.max(0, offset - limit))}
+                    onClick={() => {
+                      if (pagination.mode === 'cursor') {
+                        if (cursorHistory.length === 0) return;
+                        const prevCursor = cursorHistory[cursorHistory.length - 1] ?? null;
+                        setCursorHistory(prev => prev.slice(0, -1));
+                        setCursor(prevCursor);
+                      } else {
+                        setOffset(Math.max(0, offset - limit));
+                      }
+                    }}
                   >
                     ⬅️ Anterior
                   </button>
                 </li>
-                <li className={`page-item ${offset + limit >= pagination.total ? "disabled" : ""}`}>
+                <li className={`page-item ${(pagination.mode === 'cursor' ? !pagination.next_cursor : offset + limit >= pagination.total) ? "disabled" : ""}`}>
                   <button
                     className="page-link"
-                    onClick={() => setOffset(offset + limit)}
+                    onClick={() => {
+                      if (pagination.mode === 'cursor') {
+                        if (!pagination.next_cursor) return;
+                        setCursorHistory(prev => [...prev, cursor]);
+                        setCursor(pagination.next_cursor);
+                      } else {
+                        setOffset(offset + limit);
+                      }
+                    }}
                   >
                     Siguiente ➡️
                   </button>
@@ -461,9 +512,23 @@ function App() {
 
             {/* Info de rango */}
             <div>
-              <span className="badge bg-secondary">
-                Mostrando {pagination.offset + 1} - {Math.min(pagination.offset + limit, pagination.total)} de {pagination.total}
+              <span className="badge bg-secondary" data-testid="pagination-range-badge">
+                Mostrando {
+                  (pagination.mode === 'cursor'
+                    ? (cursorHistory.length * limit) + 1
+                    : (pagination.offset ?? 0) + 1)
+                } - {
+                  Math.min(
+                    (pagination.mode === 'cursor'
+                      ? (cursorHistory.length * limit) + events.length
+                      : (pagination.offset ?? 0) + limit),
+                    pagination.total
+                  )
+                } de {pagination.total}
               </span>
+              {!isTabVisible && (
+                <span className="badge bg-warning text-dark ms-2" data-testid="polling-paused-badge">⏸️ Polling pausado (tab oculta)</span>
+              )}
             </div>
           </div>
 

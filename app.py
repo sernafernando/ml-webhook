@@ -59,6 +59,9 @@ def db_cursor():
         with conn.cursor() as cur:
             yield cur
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         db_pool.putconn(conn)
 
@@ -1315,15 +1318,19 @@ def get_webhooks():
 
         use_cursor_mode = WEBHOOKS_CURSOR_MODE or bool(cursor_pair)
 
-        # Preferimos snapshot table. Si no existe (migración pendiente), caemos al query legado.
-        snapshot_available = True
-        try:
-            with db_cursor() as cur:
+        # Una sola conexión para count + query principal (evita pool exhaustion).
+        # Detectamos snapshot table dentro del mismo bloque; si falla, fallback legado.
+        with db_cursor() as cur:
+            snapshot_available = True
+            try:
                 cur.execute("SELECT COUNT(*) FROM webhook_latest WHERE topic = %s", (topic,))
                 total = cur.fetchone()[0]
-        except Exception:
-            snapshot_available = False
-            with db_cursor() as cur:
+            except Exception:
+                snapshot_available = False
+
+            if not snapshot_available:
+                # Rollback implícito por el error anterior; reconectar en el mismo cursor.
+                cur.connection.rollback()
                 cur.execute("""
                     WITH latest AS (
                         SELECT resource, MAX(received_at) AS max_received
@@ -1335,7 +1342,6 @@ def get_webhooks():
                 """, (topic,))
                 total = cur.fetchone()[0]
 
-        with db_cursor() as cur:
             if snapshot_available:
                 if use_cursor_mode:
                     if cursor_pair:

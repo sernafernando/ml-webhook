@@ -234,6 +234,9 @@ def fetch_and_store_preview(resource: str):
             raw_tags = ship_data.get("tags")
             ship_tags = raw_tags if isinstance(raw_tags, list) else []
 
+            # status_history: fechas reales de envío/entrega (para detectar demoras en turbos)
+            status_history = ship_data.get("status_history") or {}
+
             extra_data = {
                 "substatus": ship_data.get("substatus"),
                 "item_id": item_id,
@@ -249,6 +252,8 @@ def fetch_and_store_preview(resource: str):
                 "order_id": ship_data.get("order_id"),
                 "tracking_number": ship_data.get("tracking_number"),
                 "receiver_name": recv.get("receiver_name"),
+                "date_delivered": status_history.get("date_delivered"),
+                "date_shipped": status_history.get("date_shipped"),
             }
 
         # ----- ITEMS / PRICE_TO_WIN -----

@@ -1625,7 +1625,7 @@ def consulta():
                     token = get_token()
                     headers = {"Authorization": f"Bearer {token}"}
                     inline_body, inline_status = _build_catalog_competition_view(
-                        item_id, headers, format_json=False
+                        item_id, headers, output="html"
                     )
                     catalog_inline_html = inline_body
                 except Exception as e:
@@ -1954,13 +1954,71 @@ def _seller_cache_put(seller_id, nickname, payload):
         print(f"⚠️ seller cache put error for {seller_id}: {e}")
 
 
-def _build_catalog_competition_view(raw_input, headers, format_json=False):
+def _process_competitor_item(it):
+    """Curate raw fields from /products/{id}/items into something the frontend can use directly.
+
+    Returns a dict with: item_id, seller_id, listing_type_id, listing_label,
+    installments, price, original_price, currency_id, shipping_badges, tags, permalink.
+
+    Notes:
+      - listing_label: gold_special → "Clásica"; gold_pro → "Premium · N cuotas"
+        where N is inferred from tags (12x_campaign / 9x_campaign / 3x_campaign).
+        If gold_pro and none of those tags, defaults to 6 cuotas.
+      - shipping_badges: ["FULL"] when shipping.logistic_type == "fulfillment",
+        ["FLEX"] when "self_service" or "cross_docking". May extend later.
+    """
+    listing_type = it.get("listing_type_id")
+    tags = it.get("tags") or []
+    shipping = it.get("shipping") or {}
+
+    if listing_type == "gold_special":
+        listing_label = "Clásica"
+        installments = None
+    elif listing_type == "gold_pro":
+        if "12x_campaign" in tags:
+            installments = 12
+        elif "9x_campaign" in tags:
+            installments = 9
+        elif "3x_campaign" in tags:
+            installments = 3
+        else:
+            installments = 6
+        listing_label = f"Premium · {installments} cuotas"
+    else:
+        listing_label = listing_type or "—"
+        installments = None
+
+    shipping_badges = []
+    logistic_type = (shipping.get("logistic_type") or "").lower()
+    if logistic_type == "fulfillment":
+        shipping_badges.append("FULL")
+    elif logistic_type in ("self_service", "cross_docking"):
+        shipping_badges.append("FLEX")
+
+    return {
+        "item_id": it.get("item_id"),
+        "seller_id": it.get("seller_id"),
+        "listing_type_id": listing_type,
+        "listing_label": listing_label,
+        "installments": installments,
+        "price": it.get("price"),
+        "original_price": it.get("original_price"),
+        "currency_id": it.get("currency_id"),
+        "shipping_badges": shipping_badges,
+        "tags": tags,
+        "permalink": it.get("permalink"),
+    }
+
+
+def _build_catalog_competition_view(raw_input, headers, output="html"):
     """
     Builds the /catalogCompetition view from a raw input (MLA item id or PROD catalog id).
-    Returns (response, status):
-      - if format_json=True → response is a Flask jsonify object with raw API data.
-      - otherwise → response is an HTML body string (sin <html> wrap), embeddable in any page.
-    On error returns an HTML alert string with a non-200 status.
+
+    output:
+      - "html" → returns (body_html_str, status). Body is HTML sin <html> wrap.
+      - "json" → returns (jsonify response, status) with raw upstream payloads.
+      - "processed" → returns (jsonify response, status) with curated/processed data
+                      shaped for external consumers.
     """
     raw_input = (raw_input or "").strip()
     if not raw_input:
@@ -2021,13 +2079,11 @@ def _build_catalog_competition_view(raw_input, headers, format_json=False):
             if seller_id in users_raw:
                 user_data = users_raw[seller_id]
             else:
-                # Cache DB primero (TTL infinito)
                 cached_nick, cached_payload = _seller_cache_get(seller_id)
                 if cached_payload is not None:
                     user_data = cached_payload
                     users_raw[seller_id] = user_data
                 else:
-                    # Cache miss → fetch + persistir
                     try:
                         r_user = ml_api_get(
                             f"https://api.mercadolibre.com/users/{seller_id}", headers=headers
@@ -2046,10 +2102,15 @@ def _build_catalog_competition_view(raw_input, headers, format_json=False):
             if user_data:
                 nickname = user_data.get("nickname", seller_id)
 
-        enriched.append({"item": it, "nickname": nickname, "user": user_data})
+        enriched.append({
+            "item": it,
+            "nickname": nickname,
+            "user": user_data,
+            "processed": _process_competitor_item(it),
+        })
 
-    # 4b) Short-circuit: respuesta JSON cruda
-    if format_json:
+    # 4b) Short-circuit: respuesta JSON
+    if output == "json":
         return jsonify({
             "catalog_product_id": catalog_product_id,
             "product": product_data,
@@ -2057,7 +2118,26 @@ def _build_catalog_competition_view(raw_input, headers, format_json=False):
             "users": users_raw,
         }), 200
 
-    # 5) Render del body (sin wrap <html>)
+    if output == "processed":
+        return jsonify({
+            "catalog_product_id": catalog_product_id,
+            "product": {
+                "id": catalog_product_id,
+                "name": title,
+                "thumbnail": thumbnail,
+                "buy_box_winner_item_id": winner_item_id,
+            },
+            "competitors": [
+                {
+                    **row["processed"],
+                    "nickname": row["nickname"],
+                    "is_winner": row["processed"].get("item_id") == winner_item_id,
+                }
+                for row in enriched
+            ],
+        }), 200
+
+    # 5) Render del body HTML (sin wrap <html>)
     def _fmt_money(val, currency="ARS"):
         try:
             n = int(round(float(val)))
@@ -2092,18 +2172,42 @@ def _build_catalog_competition_view(raw_input, headers, format_json=False):
 
     cards = []
     for row in enriched:
-        it = row["item"]
+        proc = row["processed"]
         nickname = row["nickname"]
-        it_id = it.get("item_id")
-        currency = it.get("currency_id") or "ARS"
-        price = it.get("price")
-        warranty = it.get("warranty") or "—"
+        it_id = proc.get("item_id")
+        currency = proc.get("currency_id") or "ARS"
+        price = proc.get("price")
+        original_price = proc.get("original_price")
+        listing_label = proc.get("listing_label") or "—"
+        shipping_badges = proc.get("shipping_badges") or []
 
         is_winner = it_id == winner_item_id
         border_cls = "border-success" if is_winner else "border-secondary"
         winner_badge = "<span class='badge bg-success ms-2'>🏆 Ganador</span>" if is_winner else ""
 
         pdp_link = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{it_id}"
+
+        # Precio: si hay original_price > price, mostrar tachado arriba
+        try:
+            show_strike = (
+                original_price is not None
+                and price is not None
+                and float(original_price) > float(price)
+            )
+        except Exception:
+            show_strike = False
+        strike_html = (
+            f"<div class='text-muted small text-decoration-line-through'>"
+            f"{_fmt_money(original_price, currency)}</div>"
+            if show_strike else ""
+        )
+
+        ship_html = "".join(
+            f"<span class='badge bg-warning text-dark me-1'>{b}</span>"
+            if b == "FULL"
+            else f"<span class='badge bg-info text-dark me-1'>{b}</span>"
+            for b in shipping_badges
+        )
 
         cards.append(f"""
           <div class="col-md-6 col-lg-4 mb-3">
@@ -2115,8 +2219,12 @@ def _build_catalog_competition_view(raw_input, headers, format_json=False):
                 <div class="mb-2">
                   <a href="{pdp_link}" target="_blank" rel="noopener noreferrer" class="text-info">{it_id}</a>
                 </div>
+                <div class="mb-2">
+                  <span class="badge bg-secondary">{listing_label}</span>
+                  {ship_html}
+                </div>
+                {strike_html}
                 <div><strong>Precio:</strong> {_fmt_money(price, currency)}</div>
-                <div class="small text-muted">{warranty}</div>
               </div>
             </div>
           </div>
@@ -2144,11 +2252,11 @@ def catalog_competition():
     try:
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
-        format_json = request.args.get("format") == "json"
-        body, status = _build_catalog_competition_view(raw_input, headers, format_json)
-        if format_json:
+        fmt = request.args.get("format")
+        output = "json" if fmt == "json" else "processed" if fmt == "processed" else "html"
+        body, status = _build_catalog_competition_view(raw_input, headers, output)
+        if output != "html":
             return body, status
-        # Wrap con <html>
         html = f"""
         <html>
           <head>

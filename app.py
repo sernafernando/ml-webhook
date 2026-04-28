@@ -1632,13 +1632,14 @@ def consulta():
                     error = str(e)
                     catalog_inline_html = None
 
-            try:
-                token = get_token()
-                headers = {"Authorization": f"Bearer {token}"}
-                res = ml_api_get(f"https://api.mercadolibre.com{resource}", headers=headers)
-                data = res.json()
-            except Exception as e:
-                error = str(e)
+            if mode in ("items", "price_to_win"):
+                try:
+                    token = get_token()
+                    headers = {"Authorization": f"Bearer {token}"}
+                    res = ml_api_get(f"https://api.mercadolibre.com{resource}", headers=headers)
+                    data = res.json()
+                except Exception as e:
+                    error = str(e)
 
     # render HTML
     html_parts = [

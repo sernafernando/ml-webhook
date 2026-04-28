@@ -1959,36 +1959,40 @@ def catalog_competition():
             )
         competitors = res_items.json().get("results", [])
 
-        # 4) Fan-out: price_to_win + nickname del seller por cada competidor
+        # 4) Fan-out: solo lookup de seller (nickname + datos crudos), cacheado por seller_id
+        users_raw = {}
         enriched = []
         for it in competitors:
-            it_id = it.get("item_id")
             seller_id = it.get("seller_id")
-
-            ptw = None
-            if it_id:
-                try:
-                    r_ptw = ml_api_get(
-                        f"https://api.mercadolibre.com/items/{it_id}/price_to_win?version=v2",
-                        headers=headers,
-                    )
-                    if r_ptw.ok:
-                        ptw = r_ptw.json()
-                except Exception:
-                    pass
-
+            user_data = None
             nickname = seller_id
-            if seller_id:
-                try:
-                    r_user = ml_api_get(
-                        f"https://api.mercadolibre.com/users/{seller_id}", headers=headers
-                    )
-                    if r_user.ok:
-                        nickname = r_user.json().get("nickname", seller_id)
-                except Exception:
-                    pass
 
-            enriched.append({"item": it, "ptw": ptw, "nickname": nickname})
+            if seller_id is not None:
+                if seller_id in users_raw:
+                    user_data = users_raw[seller_id]
+                else:
+                    try:
+                        r_user = ml_api_get(
+                            f"https://api.mercadolibre.com/users/{seller_id}", headers=headers
+                        )
+                        if r_user.ok:
+                            user_data = r_user.json()
+                            users_raw[seller_id] = user_data
+                    except Exception:
+                        pass
+                if user_data:
+                    nickname = user_data.get("nickname", seller_id)
+
+            enriched.append({"item": it, "nickname": nickname, "user": user_data})
+
+        # 4b) Short-circuit: respuesta JSON cruda
+        if request.args.get("format") == "json":
+            return jsonify({
+                "catalog_product_id": catalog_product_id,
+                "product": product_data,
+                "items": competitors,
+                "users": users_raw,
+            })
 
         # 5) Render
         def _fmt_money(val, currency="ARS"):
@@ -1997,29 +2001,6 @@ def catalog_competition():
                 return f"{currency} {n:,}".replace(",", ".")
             except Exception:
                 return "—"
-
-        def _status_badge(status):
-            mapping = {
-                "winning": ("success", "🏆 Ganando"),
-                "sharing_first_place": ("warning", "⚖️ Compartiendo 1º"),
-                "losing": ("danger", "🚫 Perdiendo"),
-                "listed": ("secondary", "📋 Listado"),
-                "competing": ("info", "⚔️ Compitiendo"),
-            }
-            cls, label = mapping.get(status, ("secondary", status or "—"))
-            return f"<span class='badge bg-{cls}'>{label}</span>"
-
-        def _render_boosts_compact(boost_list):
-            if not boost_list:
-                return "<small class='text-muted'>Sin boosts</small>"
-            chips = []
-            for b in boost_list:
-                st = (b or {}).get("status")
-                desc = (b or {}).get("description") or (b or {}).get("id") or "—"
-                icon = "🟢" if st == "boosted" else ("⚪" if st in ("opportunity", None) else "🟠")
-                title = st or ""
-                chips.append(f"<span class='me-2' title='{title}'>{icon} {desc}</span>")
-            return "<div class='small'>" + "".join(chips) + "</div>"
 
         winner_url = (
             f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{winner_item_id}"

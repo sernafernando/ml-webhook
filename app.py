@@ -1620,7 +1620,17 @@ def consulta():
                 # 👉 redirección al nuevo endpoint
                 return redirect(f"/itemsByCatalogCards?product_id={item_id}")
             elif mode == "catalog_competition":
-                return redirect(f"/catalogCompetition?input={item_id}")
+                # Render inline: ejecutamos la lógica acá y la embebemos abajo
+                try:
+                    token = get_token()
+                    headers = {"Authorization": f"Bearer {token}"}
+                    inline_body, inline_status = _build_catalog_competition_view(
+                        item_id, headers, format_json=False
+                    )
+                    catalog_inline_html = inline_body
+                except Exception as e:
+                    error = str(e)
+                    catalog_inline_html = None
 
             try:
                 token = get_token()
@@ -1663,6 +1673,8 @@ def consulta():
 
     if data:
         html_parts.append(render_ml_view(resource, data))
+    elif 'catalog_inline_html' in locals() and catalog_inline_html:
+        html_parts.append(catalog_inline_html)
 
     html_parts.append("""
             </div>
@@ -1906,6 +1918,222 @@ def items_by_catalog_cards():
         return f"❌ Error: {e}", 500
 
     
+def _seller_cache_get(seller_id):
+    """Returns (nickname, payload) from ml_sellers cache, or (None, None) on miss/error."""
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT nickname, payload FROM ml_sellers WHERE seller_id = %s",
+                (seller_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                return row[0], row[1]
+    except Exception as e:
+        print(f"⚠️ seller cache get error for {seller_id}: {e}")
+    return None, None
+
+
+def _seller_cache_put(seller_id, nickname, payload):
+    """Upsert seller into ml_sellers. Best-effort: swallows errors so it never breaks the request."""
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ml_sellers (seller_id, nickname, payload)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (seller_id) DO UPDATE
+                    SET nickname = EXCLUDED.nickname,
+                        payload = EXCLUDED.payload,
+                        fetched_at = NOW()
+                """,
+                (seller_id, nickname, Json(payload)),
+            )
+    except Exception as e:
+        print(f"⚠️ seller cache put error for {seller_id}: {e}")
+
+
+def _build_catalog_competition_view(raw_input, headers, format_json=False):
+    """
+    Builds the /catalogCompetition view from a raw input (MLA item id or PROD catalog id).
+    Returns (response, status):
+      - if format_json=True → response is a Flask jsonify object with raw API data.
+      - otherwise → response is an HTML body string (sin <html> wrap), embeddable in any page.
+    On error returns an HTML alert string with a non-200 status.
+    """
+    raw_input = (raw_input or "").strip()
+    if not raw_input:
+        return "<div class='alert alert-warning m-4'>Falta parámetro 'input'</div>", 400
+
+    # 1) Resolver catalog_product_id: probar como item primero, fallback a product
+    catalog_product_id = None
+    res_item = ml_api_get(f"https://api.mercadolibre.com/items/{raw_input}", headers=headers)
+    if res_item.ok:
+        item_json = res_item.json()
+        catalog_product_id = item_json.get("catalog_product_id")
+        if not catalog_product_id:
+            return (
+                f"<div class='alert alert-warning m-4'>⚠️ El item <strong>{raw_input}</strong> "
+                f"no es publicación de catálogo (no tiene <code>catalog_product_id</code>).</div>",
+                400,
+            )
+    else:
+        catalog_product_id = raw_input
+
+    # 2) Datos del PDP (incluye buy_box_winner)
+    res_product = ml_api_get(
+        f"https://api.mercadolibre.com/products/{catalog_product_id}", headers=headers
+    )
+    if not res_product.ok:
+        return (
+            f"<div class='alert alert-danger m-4'>❌ No se pudo obtener PDP "
+            f"<strong>{catalog_product_id}</strong>: {res_product.text}</div>",
+            res_product.status_code,
+        )
+    product_data = res_product.json()
+    title = product_data.get("name", f"Producto {catalog_product_id}")
+    thumbnail = (product_data.get("pictures") or [{}])[0].get("url", "")
+    buy_box_winner = product_data.get("buy_box_winner") or {}
+    winner_item_id = buy_box_winner.get("item_id")
+
+    # 3) Competidores en el PDP
+    res_items = ml_api_get(
+        f"https://api.mercadolibre.com/products/{catalog_product_id}/items", headers=headers
+    )
+    if not res_items.ok:
+        return (
+            f"<div class='alert alert-danger m-4'>❌ No se pudieron obtener competidores: "
+            f"{res_items.text}</div>",
+            res_items.status_code,
+        )
+    competitors = res_items.json().get("results", [])
+
+    # 4) Fan-out: lookup de seller con cache (DB + per-request)
+    users_raw = {}
+    enriched = []
+    for it in competitors:
+        seller_id = it.get("seller_id")
+        user_data = None
+        nickname = seller_id
+
+        if seller_id is not None:
+            if seller_id in users_raw:
+                user_data = users_raw[seller_id]
+            else:
+                # Cache DB primero (TTL infinito)
+                cached_nick, cached_payload = _seller_cache_get(seller_id)
+                if cached_payload is not None:
+                    user_data = cached_payload
+                    users_raw[seller_id] = user_data
+                else:
+                    # Cache miss → fetch + persistir
+                    try:
+                        r_user = ml_api_get(
+                            f"https://api.mercadolibre.com/users/{seller_id}", headers=headers
+                        )
+                        if r_user.ok:
+                            user_data = r_user.json()
+                            users_raw[seller_id] = user_data
+                            _seller_cache_put(
+                                seller_id,
+                                user_data.get("nickname"),
+                                user_data,
+                            )
+                    except Exception:
+                        pass
+
+            if user_data:
+                nickname = user_data.get("nickname", seller_id)
+
+        enriched.append({"item": it, "nickname": nickname, "user": user_data})
+
+    # 4b) Short-circuit: respuesta JSON cruda
+    if format_json:
+        return jsonify({
+            "catalog_product_id": catalog_product_id,
+            "product": product_data,
+            "items": competitors,
+            "users": users_raw,
+        }), 200
+
+    # 5) Render del body (sin wrap <html>)
+    def _fmt_money(val, currency="ARS"):
+        try:
+            n = int(round(float(val)))
+            return f"{currency} {n:,}".replace(",", ".")
+        except Exception:
+            return "—"
+
+    winner_url = (
+        f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{winner_item_id}"
+        if winner_item_id else f"https://www.mercadolibre.com.ar/p/{catalog_product_id}"
+    )
+
+    product_card = f"""
+    <div class="card bg-dark text-light border-info mb-4">
+      <div class="row g-0">
+        <div class="col-md-3 d-flex align-items-center justify-content-center p-2">
+          <img src="{thumbnail}" alt="{title}" class="img-fluid rounded-start" style="max-height: 140px; object-fit: cover;" />
+        </div>
+        <div class="col-md-9">
+          <div class="card-body">
+            <h4 class="card-title">{title}</h4>
+            <p class="card-text mb-1"><small class="text-muted">Catálogo {catalog_product_id} · {len(enriched)} competidores</small></p>
+            <p class="card-text mb-0">
+              <strong>🏆 Buy Box Winner:</strong>
+              {f'<a href="{winner_url}" target="_blank" rel="noopener noreferrer">{winner_item_id}</a>' if winner_item_id else '—'}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+
+    cards = []
+    for row in enriched:
+        it = row["item"]
+        nickname = row["nickname"]
+        it_id = it.get("item_id")
+        currency = it.get("currency_id") or "ARS"
+        price = it.get("price")
+        warranty = it.get("warranty") or "—"
+
+        is_winner = it_id == winner_item_id
+        border_cls = "border-success" if is_winner else "border-secondary"
+        winner_badge = "<span class='badge bg-success ms-2'>🏆 Ganador</span>" if is_winner else ""
+
+        pdp_link = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{it_id}"
+
+        cards.append(f"""
+          <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card bg-dark text-light {border_cls} h-100">
+              <div class="card-header">
+                <strong>{nickname}</strong>{winner_badge}
+              </div>
+              <div class="card-body">
+                <div class="mb-2">
+                  <a href="{pdp_link}" target="_blank" rel="noopener noreferrer" class="text-info">{it_id}</a>
+                </div>
+                <div><strong>Precio:</strong> {_fmt_money(price, currency)}</div>
+                <div class="small text-muted">{warranty}</div>
+              </div>
+            </div>
+          </div>
+        """)
+
+    body = f"""
+    <div class="container">
+      <h2 class="mb-3">⚔️ Competencia en Catálogo (PDP)</h2>
+      {product_card}
+      <h5 class="mb-3">🛒 Competidores</h5>
+      <div class="row">
+        {''.join(cards) if cards else "<div class='alert alert-secondary'>Sin competidores en este PDP.</div>"}
+      </div>
+    </div>
+    """
+    return body, 200
+
+
 @app.route("/catalogCompetition")
 def catalog_competition():
     raw_input = (request.args.get("input") or "").strip()
@@ -1915,166 +2143,16 @@ def catalog_competition():
     try:
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
-
-        # 1) Resolver catalog_product_id: probar como item primero, fallback a product
-        catalog_product_id = None
-        res_item = ml_api_get(f"https://api.mercadolibre.com/items/{raw_input}", headers=headers)
-        if res_item.ok:
-            item_json = res_item.json()
-            catalog_product_id = item_json.get("catalog_product_id")
-            if not catalog_product_id:
-                return (
-                    f"<div class='alert alert-warning m-4'>⚠️ El item <strong>{raw_input}</strong> "
-                    f"no es publicación de catálogo (no tiene <code>catalog_product_id</code>).</div>",
-                    400,
-                )
-        else:
-            catalog_product_id = raw_input
-
-        # 2) Datos del PDP (incluye buy_box_winner)
-        res_product = ml_api_get(
-            f"https://api.mercadolibre.com/products/{catalog_product_id}", headers=headers
-        )
-        if not res_product.ok:
-            return (
-                f"<div class='alert alert-danger m-4'>❌ No se pudo obtener PDP "
-                f"<strong>{catalog_product_id}</strong>: {res_product.text}</div>",
-                res_product.status_code,
-            )
-        product_data = res_product.json()
-        title = product_data.get("name", f"Producto {catalog_product_id}")
-        thumbnail = (product_data.get("pictures") or [{}])[0].get("url", "")
-        buy_box_winner = product_data.get("buy_box_winner") or {}
-        winner_item_id = buy_box_winner.get("item_id")
-
-        # 3) Competidores en el PDP
-        res_items = ml_api_get(
-            f"https://api.mercadolibre.com/products/{catalog_product_id}/items", headers=headers
-        )
-        if not res_items.ok:
-            return (
-                f"<div class='alert alert-danger m-4'>❌ No se pudieron obtener competidores: "
-                f"{res_items.text}</div>",
-                res_items.status_code,
-            )
-        competitors = res_items.json().get("results", [])
-
-        # 4) Fan-out: solo lookup de seller (nickname + datos crudos), cacheado por seller_id
-        users_raw = {}
-        enriched = []
-        for it in competitors:
-            seller_id = it.get("seller_id")
-            user_data = None
-            nickname = seller_id
-
-            if seller_id is not None:
-                if seller_id in users_raw:
-                    user_data = users_raw[seller_id]
-                else:
-                    try:
-                        r_user = ml_api_get(
-                            f"https://api.mercadolibre.com/users/{seller_id}", headers=headers
-                        )
-                        if r_user.ok:
-                            user_data = r_user.json()
-                            users_raw[seller_id] = user_data
-                    except Exception:
-                        pass
-                if user_data:
-                    nickname = user_data.get("nickname", seller_id)
-
-            enriched.append({"item": it, "nickname": nickname, "user": user_data})
-
-        # 4b) Short-circuit: respuesta JSON cruda
-        if request.args.get("format") == "json":
-            return jsonify({
-                "catalog_product_id": catalog_product_id,
-                "product": product_data,
-                "items": competitors,
-                "users": users_raw,
-            })
-
-        # 5) Render
-        def _fmt_money(val, currency="ARS"):
-            try:
-                n = int(round(float(val)))
-                return f"{currency} {n:,}".replace(",", ".")
-            except Exception:
-                return "—"
-
-        winner_url = (
-            f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{winner_item_id}"
-            if winner_item_id else f"https://www.mercadolibre.com.ar/p/{catalog_product_id}"
-        )
-
-        product_card = f"""
-        <div class="card bg-dark text-light border-info mb-4">
-          <div class="row g-0">
-            <div class="col-md-3 d-flex align-items-center justify-content-center p-2">
-              <img src="{thumbnail}" alt="{title}" class="img-fluid rounded-start" style="max-height: 140px; object-fit: cover;" />
-            </div>
-            <div class="col-md-9">
-              <div class="card-body">
-                <h4 class="card-title">{title}</h4>
-                <p class="card-text mb-1"><small class="text-muted">Catálogo {catalog_product_id} · {len(enriched)} competidores</small></p>
-                <p class="card-text mb-0">
-                  <strong>🏆 Buy Box Winner:</strong>
-                  {f'<a href="{winner_url}" target="_blank" rel="noopener noreferrer">{winner_item_id}</a>' if winner_item_id else '—'}
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-        """
-
-        cards = []
-        for row in enriched:
-            it = row["item"]
-            nickname = row["nickname"]
-            it_id = it.get("item_id")
-            currency = it.get("currency_id") or "ARS"
-            price = it.get("price")
-            warranty = it.get("warranty") or "—"
-
-            is_winner = it_id == winner_item_id
-            border_cls = "border-success" if is_winner else "border-secondary"
-            winner_badge = "<span class='badge bg-success ms-2'>🏆 Ganador</span>" if is_winner else ""
-
-            pdp_link = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{it_id}"
-
-            cards.append(f"""
-              <div class="col-md-6 col-lg-4 mb-3">
-                <div class="card bg-dark text-light {border_cls} h-100">
-                  <div class="card-header">
-                    <strong>{nickname}</strong>{winner_badge}
-                  </div>
-                  <div class="card-body">
-                    <div class="mb-2">
-                      <a href="{pdp_link}" target="_blank" rel="noopener noreferrer" class="text-info">{it_id}</a>
-                    </div>
-                    <div><strong>Precio:</strong> {_fmt_money(price, currency)}</div>
-                    <div class="small text-muted">{warranty}</div>
-                  </div>
-                </div>
-              </div>
-            """)
-
-        body = f"""
-        <div class="container">
-          <h2 class="mb-3">⚔️ Competencia en Catálogo (PDP)</h2>
-          {product_card}
-          <h5 class="mb-3">🛒 Competidores</h5>
-          <div class="row">
-            {''.join(cards) if cards else "<div class='alert alert-secondary'>Sin competidores en este PDP.</div>"}
-          </div>
-        </div>
-        """
-
+        format_json = request.args.get("format") == "json"
+        body, status = _build_catalog_competition_view(raw_input, headers, format_json)
+        if format_json:
+            return body, status
+        # Wrap con <html>
         html = f"""
         <html>
           <head>
             <meta charset="utf-8">
-            <title>Competencia en Catálogo · {catalog_product_id}</title>
+            <title>Competencia en Catálogo · {raw_input}</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
             <link rel="icon" href={FAVICON_DIR}>
           </head>
@@ -2083,8 +2161,7 @@ def catalog_competition():
           </body>
         </html>
         """
-        return html, 200
-
+        return html, status
     except Exception as e:
         return f"<div class='alert alert-danger m-4'>❌ Error: {e}</div>", 500
 

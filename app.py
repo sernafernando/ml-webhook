@@ -1619,6 +1619,8 @@ def consulta():
             elif mode == "catalog_cards":
                 # 👉 redirección al nuevo endpoint
                 return redirect(f"/itemsByCatalogCards?product_id={item_id}")
+            elif mode == "catalog_competition":
+                return redirect(f"/catalogCompetition?input={item_id}")
 
             try:
                 token = get_token()
@@ -1648,6 +1650,7 @@ def consulta():
                 <option value="items" {"selected" if mode == "items" else ""}>Consulta Items</option>
                 <option value="price_to_win" {"selected" if mode == "price_to_win" else ""}>Consulta Price to Win</option>
                 <option value="catalog_cards" {"selected" if mode == "catalog_cards" else ""}>Consulta Items por Catálogo</option>
+                <option value="catalog_competition" {"selected" if mode == "catalog_competition" else ""}>Competencia en Catálogo (PDP)</option>
                 </select>
                 <button class="btn btn-primary" type="submit">Consultar</button>
             </div>
@@ -1903,6 +1906,226 @@ def items_by_catalog_cards():
         return f"❌ Error: {e}", 500
 
     
+@app.route("/catalogCompetition")
+def catalog_competition():
+    raw_input = (request.args.get("input") or "").strip()
+    if not raw_input:
+        return "Falta parámetro 'input'", 400
+
+    try:
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1) Resolver catalog_product_id: probar como item primero, fallback a product
+        catalog_product_id = None
+        res_item = ml_api_get(f"https://api.mercadolibre.com/items/{raw_input}", headers=headers)
+        if res_item.ok:
+            item_json = res_item.json()
+            catalog_product_id = item_json.get("catalog_product_id")
+            if not catalog_product_id:
+                return (
+                    f"<div class='alert alert-warning m-4'>⚠️ El item <strong>{raw_input}</strong> "
+                    f"no es publicación de catálogo (no tiene <code>catalog_product_id</code>).</div>",
+                    400,
+                )
+        else:
+            catalog_product_id = raw_input
+
+        # 2) Datos del PDP (incluye buy_box_winner)
+        res_product = ml_api_get(
+            f"https://api.mercadolibre.com/products/{catalog_product_id}", headers=headers
+        )
+        if not res_product.ok:
+            return (
+                f"<div class='alert alert-danger m-4'>❌ No se pudo obtener PDP "
+                f"<strong>{catalog_product_id}</strong>: {res_product.text}</div>",
+                res_product.status_code,
+            )
+        product_data = res_product.json()
+        title = product_data.get("name", f"Producto {catalog_product_id}")
+        thumbnail = (product_data.get("pictures") or [{}])[0].get("url", "")
+        buy_box_winner = product_data.get("buy_box_winner") or {}
+        winner_item_id = buy_box_winner.get("item_id")
+
+        # 3) Competidores en el PDP
+        res_items = ml_api_get(
+            f"https://api.mercadolibre.com/products/{catalog_product_id}/items", headers=headers
+        )
+        if not res_items.ok:
+            return (
+                f"<div class='alert alert-danger m-4'>❌ No se pudieron obtener competidores: "
+                f"{res_items.text}</div>",
+                res_items.status_code,
+            )
+        competitors = res_items.json().get("results", [])
+
+        # 4) Fan-out: price_to_win + nickname del seller por cada competidor
+        enriched = []
+        for it in competitors:
+            it_id = it.get("item_id")
+            seller_id = it.get("seller_id")
+
+            ptw = None
+            if it_id:
+                try:
+                    r_ptw = ml_api_get(
+                        f"https://api.mercadolibre.com/items/{it_id}/price_to_win?version=v2",
+                        headers=headers,
+                    )
+                    if r_ptw.ok:
+                        ptw = r_ptw.json()
+                except Exception:
+                    pass
+
+            nickname = seller_id
+            if seller_id:
+                try:
+                    r_user = ml_api_get(
+                        f"https://api.mercadolibre.com/users/{seller_id}", headers=headers
+                    )
+                    if r_user.ok:
+                        nickname = r_user.json().get("nickname", seller_id)
+                except Exception:
+                    pass
+
+            enriched.append({"item": it, "ptw": ptw, "nickname": nickname})
+
+        # 5) Render
+        def _fmt_money(val, currency="ARS"):
+            try:
+                n = int(round(float(val)))
+                return f"{currency} {n:,}".replace(",", ".")
+            except Exception:
+                return "—"
+
+        def _status_badge(status):
+            mapping = {
+                "winning": ("success", "🏆 Ganando"),
+                "sharing_first_place": ("warning", "⚖️ Compartiendo 1º"),
+                "losing": ("danger", "🚫 Perdiendo"),
+                "listed": ("secondary", "📋 Listado"),
+                "competing": ("info", "⚔️ Compitiendo"),
+            }
+            cls, label = mapping.get(status, ("secondary", status or "—"))
+            return f"<span class='badge bg-{cls}'>{label}</span>"
+
+        def _render_boosts_compact(boost_list):
+            if not boost_list:
+                return "<small class='text-muted'>Sin boosts</small>"
+            chips = []
+            for b in boost_list:
+                st = (b or {}).get("status")
+                desc = (b or {}).get("description") or (b or {}).get("id") or "—"
+                icon = "🟢" if st == "boosted" else ("⚪" if st in ("opportunity", None) else "🟠")
+                title = st or ""
+                chips.append(f"<span class='me-2' title='{title}'>{icon} {desc}</span>")
+            return "<div class='small'>" + "".join(chips) + "</div>"
+
+        winner_url = (
+            f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{winner_item_id}"
+            if winner_item_id else f"https://www.mercadolibre.com.ar/p/{catalog_product_id}"
+        )
+
+        product_card = f"""
+        <div class="card bg-dark text-light border-info mb-4">
+          <div class="row g-0">
+            <div class="col-md-3 d-flex align-items-center justify-content-center p-2">
+              <img src="{thumbnail}" alt="{title}" class="img-fluid rounded-start" style="max-height: 140px; object-fit: cover;" />
+            </div>
+            <div class="col-md-9">
+              <div class="card-body">
+                <h4 class="card-title">{title}</h4>
+                <p class="card-text mb-1"><small class="text-muted">Catálogo {catalog_product_id} · {len(enriched)} competidores</small></p>
+                <p class="card-text mb-0">
+                  <strong>🏆 Buy Box Winner:</strong>
+                  {f'<a href="{winner_url}" target="_blank" rel="noopener noreferrer">{winner_item_id}</a>' if winner_item_id else '—'}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        """
+
+        cards = []
+        for row in enriched:
+            it = row["item"]
+            ptw = row["ptw"] or {}
+            nickname = row["nickname"]
+            it_id = it.get("item_id")
+            currency = it.get("currency_id") or ptw.get("currency_id") or "ARS"
+            current_price = ptw.get("current_price", it.get("price"))
+            price_to_win_val = ptw.get("price_to_win")
+            status = ptw.get("status")
+            boosts = ptw.get("boosts", [])
+
+            is_winner = it_id == winner_item_id
+            border_cls = "border-success" if is_winner else "border-secondary"
+            winner_badge = "<span class='badge bg-success ms-2'>🏆 Ganador</span>" if is_winner else ""
+
+            pdp_link = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{it_id}"
+
+            diff_html = ""
+            if (
+                current_price is not None
+                and price_to_win_val is not None
+                and float(current_price) > float(price_to_win_val)
+            ):
+                diff = float(current_price) - float(price_to_win_val)
+                diff_html = (
+                    f"<div class='small text-danger'>Δ para ganar: "
+                    f"{_fmt_money(diff, currency)}</div>"
+                )
+
+            cards.append(f"""
+              <div class="col-md-6 col-lg-4 mb-3">
+                <div class="card bg-dark text-light {border_cls} h-100">
+                  <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><strong>{nickname}</strong>{winner_badge}</span>
+                    {_status_badge(status)}
+                  </div>
+                  <div class="card-body">
+                    <div class="mb-2">
+                      <a href="{pdp_link}" target="_blank" rel="noopener noreferrer" class="text-info">{it_id}</a>
+                    </div>
+                    <div><strong>Precio actual:</strong> {_fmt_money(current_price, currency)}</div>
+                    <div><strong>Price to win:</strong> {_fmt_money(price_to_win_val, currency)}</div>
+                    {diff_html}
+                    <hr>
+                    {_render_boosts_compact(boosts)}
+                  </div>
+                </div>
+              </div>
+            """)
+
+        body = f"""
+        <div class="container">
+          <h2 class="mb-3">⚔️ Competencia en Catálogo (PDP)</h2>
+          {product_card}
+          <h5 class="mb-3">🛒 Competidores</h5>
+          <div class="row">
+            {''.join(cards) if cards else "<div class='alert alert-secondary'>Sin competidores en este PDP.</div>"}
+          </div>
+        </div>
+        """
+
+        html = f"""
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Competencia en Catálogo · {catalog_product_id}</title>
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+            <link rel="icon" href={FAVICON_DIR}>
+          </head>
+          <body class="bg-dark text-light p-3" data-bs-theme="dark">
+            {body}
+          </body>
+        </html>
+        """
+        return html, 200
+
+    except Exception as e:
+        return f"<div class='alert alert-danger m-4'>❌ Error: {e}</div>", 500
+
 @app.route("/seller")
 def get_seller():
     seller_id = request.args.get("id")

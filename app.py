@@ -2030,14 +2030,11 @@ def catalog_competition():
         cards = []
         for row in enriched:
             it = row["item"]
-            ptw = row["ptw"] or {}
             nickname = row["nickname"]
             it_id = it.get("item_id")
-            currency = it.get("currency_id") or ptw.get("currency_id") or "ARS"
-            current_price = ptw.get("current_price", it.get("price"))
-            price_to_win_val = ptw.get("price_to_win")
-            status = ptw.get("status")
-            boosts = ptw.get("boosts", [])
+            currency = it.get("currency_id") or "ARS"
+            price = it.get("price")
+            warranty = it.get("warranty") or "—"
 
             is_winner = it_id == winner_item_id
             border_cls = "border-success" if is_winner else "border-secondary"
@@ -2045,34 +2042,18 @@ def catalog_competition():
 
             pdp_link = f"https://www.mercadolibre.com.ar/p/{catalog_product_id}?pdp_filters=item_id:{it_id}"
 
-            diff_html = ""
-            if (
-                current_price is not None
-                and price_to_win_val is not None
-                and float(current_price) > float(price_to_win_val)
-            ):
-                diff = float(current_price) - float(price_to_win_val)
-                diff_html = (
-                    f"<div class='small text-danger'>Δ para ganar: "
-                    f"{_fmt_money(diff, currency)}</div>"
-                )
-
             cards.append(f"""
               <div class="col-md-6 col-lg-4 mb-3">
                 <div class="card bg-dark text-light {border_cls} h-100">
-                  <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><strong>{nickname}</strong>{winner_badge}</span>
-                    {_status_badge(status)}
+                  <div class="card-header">
+                    <strong>{nickname}</strong>{winner_badge}
                   </div>
                   <div class="card-body">
                     <div class="mb-2">
                       <a href="{pdp_link}" target="_blank" rel="noopener noreferrer" class="text-info">{it_id}</a>
                     </div>
-                    <div><strong>Precio actual:</strong> {_fmt_money(current_price, currency)}</div>
-                    <div><strong>Price to win:</strong> {_fmt_money(price_to_win_val, currency)}</div>
-                    {diff_html}
-                    <hr>
-                    {_render_boosts_compact(boosts)}
+                    <div><strong>Precio:</strong> {_fmt_money(price, currency)}</div>
+                    <div class="small text-muted">{warranty}</div>
                   </div>
                 </div>
               </div>

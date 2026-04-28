@@ -1992,8 +1992,10 @@ def _process_competitor_item(it):
     logistic_type = (shipping.get("logistic_type") or "").lower()
     if logistic_type == "fulfillment":
         shipping_badges.append("FULL")
-    elif logistic_type in ("self_service", "cross_docking"):
+    elif logistic_type == "self_service":
         shipping_badges.append("FLEX")
+    elif logistic_type == "cross_docking":
+        shipping_badges.append("ENCOMIENDA")
 
     return {
         "item_id": it.get("item_id"),
@@ -2202,12 +2204,15 @@ def _build_catalog_competition_view(raw_input, headers, output="html"):
             if show_strike else ""
         )
 
-        ship_html = "".join(
-            f"<span class='badge bg-warning text-dark me-1'>{b}</span>"
-            if b == "FULL"
-            else f"<span class='badge bg-info text-dark me-1'>{b}</span>"
-            for b in shipping_badges
-        )
+        def _ship_badge(b):
+            if b == "FULL":
+                return f"<span class='badge bg-warning text-dark me-1'>{b}</span>"
+            if b == "FLEX":
+                return f"<span class='badge bg-info text-dark me-1'>{b}</span>"
+            if b == "ENCOMIENDA":
+                return f"<span class='badge bg-secondary me-1'>{b}</span>"
+            return f"<span class='badge bg-light text-dark me-1'>{b}</span>"
+        ship_html = "".join(_ship_badge(b) for b in shipping_badges)
 
         cards.append(f"""
           <div class="col-md-6 col-lg-4 mb-3">

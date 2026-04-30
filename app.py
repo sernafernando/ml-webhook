@@ -47,8 +47,8 @@ def sse_notify(channel: str, data: dict = None):
     except Exception:
         pass  # Best-effort — never block the webhook
 
-db_pool = pool.SimpleConnectionPool(
-    1, 5,
+db_pool = pool.ThreadedConnectionPool(
+    2, 20,
     dsn=os.getenv("DATABASE_URL")
 )
 

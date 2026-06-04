@@ -89,6 +89,21 @@ PREVIEW_DEAD_QUEUE_KEY = os.getenv("PREVIEW_DEAD_QUEUE_KEY", "queue:preview:dead
 _topics_cache = {"value": None, "expires_at": 0.0}
 _topics_cache_lock = threading.Lock()
 
+_sweep_state = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "processed": 0,
+    "skipped": 0,
+    "errors": 0,
+    "total_enumerated": 0,
+    "last_mla": None,
+    "dry_run": False,
+    "limit": None,
+    "min_age_hours": 0,
+}
+_sweep_lock = threading.Lock()
+
 
 FAVICON_DIR = "https://ml-webhook.gaussonline.com.ar/assets/white-g-BfxDaKwI.png"
 
@@ -233,6 +248,106 @@ def _upsert_seller_shipping_cost(mla_id, item_data, source):
         print(f"✅ shipping_cost {mla_id} upsert (source={source}, list_cost={list_cost})")
     except Exception as e:
         print(f"⚠️ shipping_cost {mla_id}: error {e}")
+
+
+
+def _sweep_seller_shipping_costs(limit, dry_run, min_age_hours):
+    """Background worker for /admin/sweep-shipping-costs. Enumerates active MLAs and upserts costs."""
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT user_id FROM ml_tokens WHERE id = 1")
+            row = cur.fetchone()
+        if not row or row[0] is None:
+            print("❌ sweep: ml_tokens.user_id ausente")
+            _sweep_state["errors"] += 1
+            return
+        seller_id = row[0]
+
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # enumerate active MLAs via scan API (handles >1000 items)
+        all_mlas = []
+        scroll_id = None
+        while True:
+            params = {"status": "active", "search_type": "scan", "limit": 100}
+            if scroll_id:
+                params["scroll_id"] = scroll_id
+            url = f"https://api.mercadolibre.com/users/{seller_id}/items/search"
+            res = ml_api_get(url, headers=headers, params=params)
+            if res.status_code != 200:
+                print(f"❌ sweep: enumeración status={res.status_code}, abort")
+                _sweep_state["errors"] += 1
+                return
+            data = res.json()
+            page = data.get("results") or []
+            for entry in page:
+                mla = entry if isinstance(entry, str) else (entry or {}).get("id")
+                if mla:
+                    all_mlas.append(mla)
+            scroll_id = data.get("scroll_id")
+            if not page or not scroll_id:
+                break
+            if limit and len(all_mlas) >= limit:
+                all_mlas = all_mlas[:limit]
+                break
+
+        _sweep_state["total_enumerated"] = len(all_mlas)
+        print(f"🔍 sweep: {len(all_mlas)} MLAs activos a procesar (dry_run={dry_run}, min_age_hours={min_age_hours})")
+
+        for mla_id in all_mlas:
+            _sweep_state["last_mla"] = mla_id
+
+            if min_age_hours > 0:
+                try:
+                    with db_cursor() as cur:
+                        cur.execute(
+                            "SELECT 1 FROM ml_seller_shipping_costs WHERE mla_id = %s AND fetched_at > NOW() - (%s || ' hours')::interval",
+                            (mla_id, min_age_hours),
+                        )
+                        if cur.fetchone():
+                            _sweep_state["skipped"] += 1
+                            continue
+                except Exception:
+                    pass  # if DB fails, do not skip; let upsert decide
+
+            if dry_run:
+                _sweep_state["processed"] += 1
+                continue
+
+            cached_logistic = None
+            cached_free_shipping = None
+            try:
+                with db_cursor() as cur:
+                    cur.execute(
+                        "SELECT extra_data->>'logistic_type', extra_data->>'free_shipping' FROM ml_previews WHERE resource = %s LIMIT 1",
+                        (f"/items/{mla_id}",),
+                    )
+                    pr = cur.fetchone()
+                if pr:
+                    cached_logistic = pr[0]
+                    if pr[1] is not None:
+                        cached_free_shipping = pr[1].lower() == "true"
+            except Exception:
+                pass
+
+            synthetic = {
+                "seller_id": seller_id,
+                "shipping": {
+                    "logistic_type": cached_logistic,
+                    "free_shipping": cached_free_shipping,
+                },
+            }
+            _upsert_seller_shipping_cost(mla_id, synthetic, source="sweep")
+            _sweep_state["processed"] += 1
+
+        print(f"✅ sweep done: processed={_sweep_state['processed']} skipped={_sweep_state['skipped']} errors={_sweep_state['errors']} total={_sweep_state['total_enumerated']}")
+    except Exception as e:
+        print(f"❌ sweep crash: {e}")
+        _sweep_state["errors"] += 1
+    finally:
+        _sweep_state["finished_at"] = datetime.now(ZoneInfo("UTC")).isoformat()
+        _sweep_state["running"] = False
 
 
 def refresh_token():
@@ -2463,6 +2578,59 @@ def debug_seller_shipping_cost():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+
+# Operational: trigger or inspect the seller shipping-cost sweep job.
+@app.route("/admin/sweep-shipping-costs")
+def admin_sweep_shipping_costs():
+    # status-only mode: ?status=1
+    if request.args.get("status"):
+        return jsonify(dict(_sweep_state))
+
+    force = request.args.get("force") == "1"
+    dry_run = request.args.get("dry_run") == "1"
+    try:
+        limit_raw = request.args.get("limit")
+        limit = int(limit_raw) if limit_raw else None
+    except ValueError:
+        return jsonify({"error": "limit must be int"}), 400
+    try:
+        min_age_hours = int(request.args.get("min_age_hours", 0))
+    except ValueError:
+        return jsonify({"error": "min_age_hours must be int"}), 400
+
+    with _sweep_lock:
+        if _sweep_state["running"] and not force:
+            return jsonify({"error": "sweep already running", "state": dict(_sweep_state)}), 409
+        _sweep_state.update({
+            "running": True,
+            "started_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+            "finished_at": None,
+            "processed": 0,
+            "skipped": 0,
+            "errors": 0,
+            "total_enumerated": 0,
+            "last_mla": None,
+            "dry_run": dry_run,
+            "limit": limit,
+            "min_age_hours": min_age_hours,
+        })
+
+    t = threading.Thread(
+        target=_sweep_seller_shipping_costs,
+        args=(limit, dry_run, min_age_hours),
+        daemon=True,
+    )
+    t.start()
+
+    return jsonify({
+        "status": "started",
+        "dry_run": dry_run,
+        "limit": limit,
+        "min_age_hours": min_age_hours,
+        "poll": "/admin/sweep-shipping-costs?status=1",
+    }), 202
 
 
 def save_token_to_db(token_data: dict):

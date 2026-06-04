@@ -2322,6 +2322,83 @@ def debug_token():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+# TEMPORARY — empirical probe for /users/{user_id}/shipping_options/free
+# Remove once seller_shipping_costs schema is finalized.
+@app.route("/debug/seller-shipping-cost")
+def debug_seller_shipping_cost():
+    try:
+        # 1) seller_id desde ml_tokens.user_id (fila id=1)
+        with db_cursor() as cur:
+            cur.execute("SELECT user_id FROM ml_tokens WHERE id = 1")
+            row = cur.fetchone()
+        if not row or row[0] is None:
+            return jsonify({"error": "ml_tokens.user_id no disponible (fila id=1)"}), 500
+        seller_id = row[0]
+
+        # 2) MLAs: explicit ?mla=... + autofill desde webhooks hasta 3
+        target = 3
+        raw_mla = (request.args.get("mla") or "").strip()
+        explicit = [m.strip() for m in raw_mla.split(",") if m.strip()] if raw_mla else []
+        mlas = list(dict.fromkeys(explicit))  # dedup preservando orden
+
+        if len(mlas) < target:
+            need = target - len(mlas)
+            with db_cursor() as cur:
+                cur.execute("""
+                    SELECT DISTINCT ON (resource) resource
+                    FROM webhooks
+                    WHERE topic = 'items'
+                      AND resource ~ '^/items/MLA[0-9]+$'
+                    ORDER BY resource, received_at DESC
+                """)
+                rows = cur.fetchall()
+            recent = [r[0].split("/")[2] for r in rows]
+            for mla in recent:
+                if mla in mlas:
+                    continue
+                mlas.append(mla)
+                if len(mlas) >= target:
+                    break
+
+        if not mlas:
+            return jsonify({"error": "no hay MLAs para probar (pasá ?mla=... o llená webhooks)"}), 400
+
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        results = []
+        for mla in mlas:
+            url = f"https://api.mercadolibre.com/users/{seller_id}/shipping_options/free"
+            params = {"item_id": mla, "verbose": "true"}
+            res = ml_api_get(url, headers=headers, params=params)
+
+            entry = {
+                "mla_id": mla,
+                "request_url": f"{url}?item_id={mla}&verbose=true",
+                "status_code": res.status_code,
+                "response_headers": {
+                    k: v for k, v in res.headers.items()
+                    if k.lower() in ("content-type", "x-rate-limit-remaining", "x-rate-limit-reset", "retry-after")
+                },
+            }
+            try:
+                entry["body"] = res.json()
+            except Exception:
+                entry["body_text"] = res.text
+
+            results.append(entry)
+            print(f"🔍 /shipping_options/free MLA={mla} status={res.status_code}")
+
+        return jsonify({
+            "seller_id": seller_id,
+            "mlas_probed": mlas,
+            "results": results,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 def save_token_to_db(token_data: dict):
     expires_in = int(token_data.get("expires_in", 0))  # <-- tiene que existir antes del execute
 

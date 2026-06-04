@@ -271,7 +271,10 @@ def _sweep_seller_shipping_costs(limit, dry_run, min_age_hours):
         seller_id = row[0]
 
         # dedicated DB connection — no pool contention
-        admin_url = os.getenv("DATABASE_ADMIN_URL") or os.getenv("DATABASE_URL")
+        admin_url = os.getenv("DATABASE_ADMIN_URL")
+        if not admin_url:
+            admin_url = os.getenv("DATABASE_URL")
+            print("⚠️ sweep: DATABASE_ADMIN_URL not set, using DATABASE_URL (may be PgBouncer — execute_values can fail in transaction mode)")
         conn = psycopg2.connect(admin_url)
         conn.autocommit = False
 
@@ -357,31 +360,41 @@ def _sweep_seller_shipping_costs(limit, dry_run, min_age_hours):
         def _flush():
             if not buffer:
                 return
-            with conn.cursor() as cur:
-                execute_values(
-                    cur,
-                    """INSERT INTO ml_seller_shipping_costs
-                       (mla_id, seller_id, list_cost, iva_included, currency_id,
-                        billable_weight, logistic_type, free_shipping, raw_payload,
-                        source, fetched_at)
-                       VALUES %s
-                       ON CONFLICT (mla_id) DO UPDATE SET
-                          seller_id = EXCLUDED.seller_id,
-                          list_cost = EXCLUDED.list_cost,
-                          iva_included = EXCLUDED.iva_included,
-                          currency_id = EXCLUDED.currency_id,
-                          billable_weight = EXCLUDED.billable_weight,
-                          logistic_type = COALESCE(EXCLUDED.logistic_type, ml_seller_shipping_costs.logistic_type),
-                          free_shipping = EXCLUDED.free_shipping,
-                          raw_payload = EXCLUDED.raw_payload,
-                          source = EXCLUDED.source,
-                          fetched_at = NOW()""",
-                    buffer,
-                    template="(%s, %s, %s, TRUE, %s, %s, %s, %s, %s, %s, NOW())",
-                    page_size=BATCH,
-                )
-            conn.commit()
-            buffer.clear()
+            n = len(buffer)
+            try:
+                with conn.cursor() as cur:
+                    execute_values(
+                        cur,
+                        """INSERT INTO ml_seller_shipping_costs
+                           (mla_id, seller_id, list_cost, iva_included, currency_id,
+                            billable_weight, logistic_type, free_shipping, raw_payload,
+                            source, fetched_at)
+                           VALUES %s
+                           ON CONFLICT (mla_id) DO UPDATE SET
+                              seller_id = EXCLUDED.seller_id,
+                              list_cost = EXCLUDED.list_cost,
+                              iva_included = EXCLUDED.iva_included,
+                              currency_id = EXCLUDED.currency_id,
+                              billable_weight = EXCLUDED.billable_weight,
+                              logistic_type = COALESCE(EXCLUDED.logistic_type, ml_seller_shipping_costs.logistic_type),
+                              free_shipping = EXCLUDED.free_shipping,
+                              raw_payload = EXCLUDED.raw_payload,
+                              source = EXCLUDED.source,
+                              fetched_at = NOW()""",
+                        buffer,
+                        template="(%s, %s, %s, TRUE, %s, %s, %s, %s, %s, %s, NOW())",
+                        page_size=BATCH,
+                    )
+                conn.commit()
+                buffer.clear()
+            except Exception as flush_err:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                buffer.clear()
+                print(f"❌ sweep: flush FAILED ({type(flush_err).__name__}: {flush_err}). Lost batch of {n} rows.")
+                raise
 
         for mla_id in to_process:
             _sweep_state["last_mla"] = mla_id
@@ -402,13 +415,21 @@ def _sweep_seller_shipping_costs(limit, dry_run, min_age_hours):
                 ))
                 _sweep_state["processed"] += 1
                 if len(buffer) >= BATCH:
-                    _flush()
+                    try:
+                        _flush()
+                    except Exception:
+                        _sweep_state["errors"] += 1
+                        print(f"❌ sweep: aborting after flush failure. processed={_sweep_state['processed']}/{len(to_process)}")
+                        return
                     print(f"🔍 sweep: batch flushed, processed={_sweep_state['processed']}/{len(to_process)}")
             except Exception as e:
                 print(f"⚠️ shipping_cost {mla_id}: error {e}")
                 _sweep_state["errors"] += 1
 
-        _flush()
+        try:
+            _flush()
+        except Exception:
+            _sweep_state["errors"] += 1
         print(f"✅ sweep done: processed={_sweep_state['processed']} skipped={_sweep_state['skipped']} errors={_sweep_state['errors']} total={_sweep_state['total_enumerated']}")
     except Exception as e:
         print(f"❌ sweep crash: {e}")

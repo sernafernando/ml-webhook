@@ -14,3 +14,5 @@ CREATE TABLE IF NOT EXISTS ml_seller_shipping_costs (
 
 CREATE INDEX IF NOT EXISTS idx_ml_seller_shipping_costs_fetched_at
     ON ml_seller_shipping_costs (fetched_at);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON ml_seller_shipping_costs TO mluser;

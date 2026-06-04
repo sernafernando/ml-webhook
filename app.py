@@ -258,8 +258,8 @@ def _sweep_seller_shipping_costs(limit, dry_run, min_age_hours):
     plus batched queries (single skip-check, single cache read, execute_values UPSERTs)
     so the sweep has near-zero impact on pricing-app / webhook workloads.
     """
-    import builtins, functools
-    print = functools.partial(builtins.print, flush=True)
+    import builtins, functools, sys
+    print = functools.partial(builtins.print, file=sys.stderr, flush=True)
     conn = None
     try:
         # seller_id (single pool read, then we are done with the pool)

@@ -176,6 +176,65 @@ def _run_preview_in_background(resource: str):
     t = threading.Thread(target=_target, daemon=True)
     t.start()
 
+def _upsert_seller_shipping_cost(mla_id, item_data, source):
+    """Best-effort: fetch /shipping_options/free and UPSERT cost row.
+
+    Never raises — logs and swallows. Called from webhook flow (source="webhook")
+    and from sweep job (source="sweep"). iva_included hardcoded TRUE per PASO 1 finding.
+    """
+    try:
+        seller_id = (item_data or {}).get("seller_id")
+        if seller_id is None:
+            print(f"⚠️ shipping_cost {mla_id}: seller_id ausente en item_data, skip")
+            return
+
+        shipping = (item_data or {}).get("shipping") or {}
+        free_shipping = shipping.get("free_shipping")
+        logistic_type = shipping.get("logistic_type")
+
+        token = get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"https://api.mercadolibre.com/users/{seller_id}/shipping_options/free"
+        res = ml_api_get(url, headers=headers, params={"item_id": mla_id, "verbose": "true"})
+
+        if res.status_code != 200:
+            print(f"⚠️ shipping_cost {mla_id}: status={res.status_code}, skip")
+            return
+
+        body = res.json()
+        cov = ((body or {}).get("coverage") or {}).get("all_country") or {}
+        list_cost = cov.get("list_cost")
+        currency_id = cov.get("currency_id")
+        billable_weight = cov.get("billable_weight")
+
+        with db_cursor() as cur:
+            cur.execute("""
+                INSERT INTO ml_seller_shipping_costs
+                    (mla_id, seller_id, list_cost, iva_included, currency_id,
+                     billable_weight, logistic_type, free_shipping, raw_payload,
+                     source, fetched_at)
+                VALUES (%s, %s, %s, TRUE, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (mla_id) DO UPDATE SET
+                    seller_id = EXCLUDED.seller_id,
+                    list_cost = EXCLUDED.list_cost,
+                    iva_included = EXCLUDED.iva_included,
+                    currency_id = EXCLUDED.currency_id,
+                    billable_weight = EXCLUDED.billable_weight,
+                    logistic_type = COALESCE(EXCLUDED.logistic_type, ml_seller_shipping_costs.logistic_type),
+                    free_shipping = EXCLUDED.free_shipping,
+                    raw_payload = EXCLUDED.raw_payload,
+                    source = EXCLUDED.source,
+                    fetched_at = NOW();
+            """, (
+                mla_id, seller_id, list_cost, currency_id,
+                billable_weight, logistic_type, free_shipping, Json(body),
+                source,
+            ))
+        print(f"✅ shipping_cost {mla_id} upsert (source={source}, list_cost={list_cost})")
+    except Exception as e:
+        print(f"⚠️ shipping_cost {mla_id}: error {e}")
+
+
 def refresh_token():
     global ACCESS_TOKEN, EXPIRATION
 
@@ -378,6 +437,9 @@ def fetch_and_store_preview(resource: str):
                 "free_shipping_error": free_shipping_error,
             }
 
+            # opportunistic: refresh seller shipping cost for this MLA (best-effort)
+            _upsert_seller_shipping_cost(item_id, item_data, source="webhook")
+
             # consulta 2: price_to_win
             res_ptw = ml_api_get(f"https://api.mercadolibre.com/items/{item_id}/price_to_win?version=v2", headers=headers)
             ptw_data = res_ptw.json()
@@ -464,6 +526,10 @@ def fetch_and_store_preview(resource: str):
                 "rebate_values_struct_number": rebate_values_struct_number,
                 "free_shipping_error": free_shipping_error,
             }
+
+            # opportunistic: refresh seller shipping cost for this MLA (best-effort)
+            _mla_for_cost = item_data.get("id") or resource.split("/")[-1]
+            _upsert_seller_shipping_cost(_mla_for_cost, item_data, source="webhook")
 
         # ----- CLAIMS (post-purchase) -----
         elif resource.startswith("/post-purchase/v1/claims/"):

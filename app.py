@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 import time
 import psycopg2
-from psycopg2.extras import Json
+from psycopg2.extras import Json, execute_values
 from zoneinfo import ZoneInfo
 from psycopg2 import pool
 from contextlib import contextmanager
@@ -252,8 +252,15 @@ def _upsert_seller_shipping_cost(mla_id, item_data, source):
 
 
 def _sweep_seller_shipping_costs(limit, dry_run, min_age_hours):
-    """Background worker for /admin/sweep-shipping-costs. Enumerates active MLAs and upserts costs."""
+    """Background worker for /admin/sweep-shipping-costs.
+
+    Uses a DEDICATED psycopg2 connection (DATABASE_ADMIN_URL) to bypass the app pool,
+    plus batched queries (single skip-check, single cache read, execute_values UPSERTs)
+    so the sweep has near-zero impact on pricing-app / webhook workloads.
+    """
+    conn = None
     try:
+        # seller_id (single pool read, then we are done with the pool)
         with db_cursor() as cur:
             cur.execute("SELECT user_id FROM ml_tokens WHERE id = 1")
             row = cur.fetchone()
@@ -262,6 +269,11 @@ def _sweep_seller_shipping_costs(limit, dry_run, min_age_hours):
             _sweep_state["errors"] += 1
             return
         seller_id = row[0]
+
+        # dedicated DB connection — no pool contention
+        admin_url = os.getenv("DATABASE_ADMIN_URL") or os.getenv("DATABASE_URL")
+        conn = psycopg2.connect(admin_url)
+        conn.autocommit = False
 
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
@@ -279,13 +291,13 @@ def _sweep_seller_shipping_costs(limit, dry_run, min_age_hours):
                 print(f"❌ sweep: enumeración status={res.status_code}, abort")
                 _sweep_state["errors"] += 1
                 return
-            data = res.json()
-            page = data.get("results") or []
+            data_page = res.json()
+            page = data_page.get("results") or []
             for entry in page:
                 mla = entry if isinstance(entry, str) else (entry or {}).get("id")
                 if mla:
                     all_mlas.append(mla)
-            scroll_id = data.get("scroll_id")
+            scroll_id = data_page.get("scroll_id")
             if not page or not scroll_id:
                 break
             if limit and len(all_mlas) >= limit:
@@ -295,57 +307,123 @@ def _sweep_seller_shipping_costs(limit, dry_run, min_age_hours):
         _sweep_state["total_enumerated"] = len(all_mlas)
         print(f"🔍 sweep: {len(all_mlas)} MLAs activos a procesar (dry_run={dry_run}, min_age_hours={min_age_hours})")
 
-        for mla_id in all_mlas:
+        # batch skip-check: one query for ALL MLAs
+        fresh_set = set()
+        if min_age_hours > 0 and all_mlas:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT mla_id FROM ml_seller_shipping_costs "
+                    "WHERE mla_id = ANY(%s) "
+                    "AND fetched_at > NOW() - (%s || ' hours')::interval",
+                    (all_mlas, min_age_hours),
+                )
+                fresh_set = {r[0] for r in cur.fetchall()}
+            conn.commit()
+            _sweep_state["skipped"] = len(fresh_set)
+            print(f"🔍 sweep: {len(fresh_set)} MLAs fresh < {min_age_hours}h, skip")
+
+        to_process = [m for m in all_mlas if m not in fresh_set]
+
+        if dry_run:
+            _sweep_state["processed"] = len(to_process)
+            print(f"✅ sweep dry_run: would process {len(to_process)}, skip {len(fresh_set)}")
+            return
+
+        # batch cache read: one query for ALL to_process MLAs
+        cache = {}
+        if to_process:
+            resources = [f"/items/{m}" for m in to_process]
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT resource, extra_data->>'logistic_type', extra_data->>'free_shipping' "
+                    "FROM ml_previews WHERE resource = ANY(%s)",
+                    (resources,),
+                )
+                for resource, logistic, fs in cur.fetchall():
+                    if not resource:
+                        continue
+                    parts = resource.split("/")
+                    if len(parts) < 3:
+                        continue
+                    fs_bool = fs.lower() == "true" if fs is not None else None
+                    cache[parts[2]] = (logistic, fs_bool)
+            conn.commit()
+            print(f"🔍 sweep: cache hit for {len(cache)}/{len(to_process)} MLAs (logistic_type/free_shipping)")
+
+        # per-MLA ML call + buffered UPSERTs
+        BATCH = 100
+        buffer = []
+
+        def _flush():
+            if not buffer:
+                return
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """INSERT INTO ml_seller_shipping_costs
+                       (mla_id, seller_id, list_cost, iva_included, currency_id,
+                        billable_weight, logistic_type, free_shipping, raw_payload,
+                        source, fetched_at)
+                       VALUES %s
+                       ON CONFLICT (mla_id) DO UPDATE SET
+                          seller_id = EXCLUDED.seller_id,
+                          list_cost = EXCLUDED.list_cost,
+                          iva_included = EXCLUDED.iva_included,
+                          currency_id = EXCLUDED.currency_id,
+                          billable_weight = EXCLUDED.billable_weight,
+                          logistic_type = COALESCE(EXCLUDED.logistic_type, ml_seller_shipping_costs.logistic_type),
+                          free_shipping = EXCLUDED.free_shipping,
+                          raw_payload = EXCLUDED.raw_payload,
+                          source = EXCLUDED.source,
+                          fetched_at = NOW()""",
+                    buffer,
+                    template="(%s, %s, %s, TRUE, %s, %s, %s, %s, %s, %s, NOW())",
+                    page_size=BATCH,
+                )
+            conn.commit()
+            buffer.clear()
+
+        for mla_id in to_process:
             _sweep_state["last_mla"] = mla_id
-
-            if min_age_hours > 0:
-                try:
-                    with db_cursor() as cur:
-                        cur.execute(
-                            "SELECT 1 FROM ml_seller_shipping_costs WHERE mla_id = %s AND fetched_at > NOW() - (%s || ' hours')::interval",
-                            (mla_id, min_age_hours),
-                        )
-                        if cur.fetchone():
-                            _sweep_state["skipped"] += 1
-                            continue
-                except Exception:
-                    pass  # if DB fails, do not skip; let upsert decide
-
-            if dry_run:
-                _sweep_state["processed"] += 1
-                continue
-
-            cached_logistic = None
-            cached_free_shipping = None
+            cached_logistic, cached_fs = cache.get(mla_id, (None, None))
             try:
-                with db_cursor() as cur:
-                    cur.execute(
-                        "SELECT extra_data->>'logistic_type', extra_data->>'free_shipping' FROM ml_previews WHERE resource = %s LIMIT 1",
-                        (f"/items/{mla_id}",),
-                    )
-                    pr = cur.fetchone()
-                if pr:
-                    cached_logistic = pr[0]
-                    if pr[1] is not None:
-                        cached_free_shipping = pr[1].lower() == "true"
-            except Exception:
-                pass
+                url = f"https://api.mercadolibre.com/users/{seller_id}/shipping_options/free"
+                res = ml_api_get(url, headers=headers, params={"item_id": mla_id, "verbose": "true"})
+                if res.status_code != 200:
+                    print(f"⚠️ shipping_cost {mla_id}: status={res.status_code}, skip")
+                    _sweep_state["errors"] += 1
+                    continue
+                body = res.json()
+                cov = ((body or {}).get("coverage") or {}).get("all_country") or {}
+                buffer.append((
+                    mla_id, seller_id, cov.get("list_cost"), cov.get("currency_id"),
+                    cov.get("billable_weight"), cached_logistic, cached_fs, Json(body),
+                    "sweep",
+                ))
+                _sweep_state["processed"] += 1
+                if len(buffer) >= BATCH:
+                    _flush()
+                    print(f"🔍 sweep: batch flushed, processed={_sweep_state['processed']}/{len(to_process)}")
+            except Exception as e:
+                print(f"⚠️ shipping_cost {mla_id}: error {e}")
+                _sweep_state["errors"] += 1
 
-            synthetic = {
-                "seller_id": seller_id,
-                "shipping": {
-                    "logistic_type": cached_logistic,
-                    "free_shipping": cached_free_shipping,
-                },
-            }
-            _upsert_seller_shipping_cost(mla_id, synthetic, source="sweep")
-            _sweep_state["processed"] += 1
-
+        _flush()
         print(f"✅ sweep done: processed={_sweep_state['processed']} skipped={_sweep_state['skipped']} errors={_sweep_state['errors']} total={_sweep_state['total_enumerated']}")
     except Exception as e:
         print(f"❌ sweep crash: {e}")
         _sweep_state["errors"] += 1
+        try:
+            if conn is not None:
+                conn.rollback()
+        except Exception:
+            pass
     finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
         _sweep_state["finished_at"] = datetime.now(ZoneInfo("UTC")).isoformat()
         _sweep_state["running"] = False
 

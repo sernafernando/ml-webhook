@@ -19,6 +19,12 @@ try:
         def putconn(self, conn):  # pragma: no cover
             return None
 
+        def closeall(self):  # pragma: no cover
+            return None
+
+    # app.py usa ThreadedConnectionPool; mantenemos SimpleConnectionPool por
+    # compatibilidad con versiones previas.
     psycopg2_pool.SimpleConnectionPool = _DummyPool
+    psycopg2_pool.ThreadedConnectionPool = _DummyPool
 except Exception:
     pass

@@ -532,6 +532,85 @@ def render_json_as_html(data):
     else:
         return f"<span class='text-light'>{str(data)}</span>"
 
+def _extract_cancel_detail(order_data: dict):
+    """Devuelve (motivo, solicitado_por) de una orden cancelada.
+
+    ML expone el detalle de cancelación en `cancel_detail` (formato nuevo) o,
+    en respuestas viejas, en `status_detail`. Soportamos ambos defensivamente.
+    """
+    detail = order_data.get("cancel_detail") or order_data.get("status_detail") or {}
+    if isinstance(detail, dict):
+        description = detail.get("description") or detail.get("code")
+        requested_by = detail.get("requested_by") or detail.get("group")
+        return description, requested_by
+    return (str(detail) if detail else None), None
+
+
+def _store_cancelled_order(order_data: dict):
+    """Upsert de una orden cancelada en ml_cancelled_orders.
+
+    Tabla dedicada en la base mlwebhook que pricing-app consulta cross-DB.
+    Idempotente por order_id (un mismo webhook puede llegar varias veces).
+    """
+    order_id = order_data.get("id")
+    if order_id is None:
+        return
+
+    status_detail, cancelled_by = _extract_cancel_detail(order_data)
+    buyer = order_data.get("buyer") or {}
+    seller = order_data.get("seller") or {}
+
+    items = []
+    for oi in order_data.get("order_items") or []:
+        item = oi.get("item") or {}
+        items.append({
+            "item_id": item.get("id"),
+            "seller_sku": item.get("seller_sku") or item.get("seller_custom_field"),
+            "title": item.get("title"),
+            "quantity": oi.get("quantity"),
+            "unit_price": oi.get("unit_price"),
+        })
+
+    with db_cursor() as cur:
+        cur.execute("""
+            INSERT INTO ml_cancelled_orders (
+                order_id, pack_id, status, status_detail, cancelled_by,
+                date_created, date_closed, total_amount, currency_id,
+                buyer_id, buyer_nickname, seller_id, items, payload, updated_at
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+            ON CONFLICT (order_id) DO UPDATE SET
+                pack_id = EXCLUDED.pack_id,
+                status = EXCLUDED.status,
+                status_detail = EXCLUDED.status_detail,
+                cancelled_by = EXCLUDED.cancelled_by,
+                date_created = EXCLUDED.date_created,
+                date_closed = EXCLUDED.date_closed,
+                total_amount = EXCLUDED.total_amount,
+                currency_id = EXCLUDED.currency_id,
+                buyer_id = EXCLUDED.buyer_id,
+                buyer_nickname = EXCLUDED.buyer_nickname,
+                seller_id = EXCLUDED.seller_id,
+                items = EXCLUDED.items,
+                payload = EXCLUDED.payload,
+                updated_at = NOW();
+        """, (
+            order_id,
+            order_data.get("pack_id"),
+            order_data.get("status"),
+            status_detail,
+            cancelled_by,
+            order_data.get("date_created"),
+            order_data.get("date_closed"),
+            order_data.get("total_amount"),
+            order_data.get("currency_id"),
+            buyer.get("id"),
+            buyer.get("nickname"),
+            seller.get("id"),
+            Json(items),
+            Json(order_data),
+        ))
+
+
 def fetch_and_store_preview(resource: str):
     try:
         token = get_token()
@@ -875,6 +954,39 @@ def fetch_and_store_preview(resource: str):
                 "last_updated": claim_data.get("last_updated"),
                 "site_id": claim_data.get("site_id"),
             }
+
+        # ----- ORDERS -----
+        elif resource.startswith("/orders/"):
+            res_order = ml_api_get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            order_data = res_order.json()
+
+            order_id = order_data.get("id")
+            order_status = order_data.get("status")
+            order_items = order_data.get("order_items") or []
+            first_item = (order_items[0].get("item") if order_items else {}) or {}
+            item_title = first_item.get("title") or ""
+
+            preview.update({
+                "title": item_title or f"Orden #{order_id}",
+                "status": order_status,
+            })
+
+            extra_data = {
+                "order_id": order_id,
+                "pack_id": order_data.get("pack_id"),
+                "total_amount": order_data.get("total_amount"),
+                "currency_id": order_data.get("currency_id"),
+                "date_created": order_data.get("date_created"),
+                "date_closed": order_data.get("date_closed"),
+            }
+
+            # Persistir cancelaciones en tabla dedicada para que pricing-app
+            # las consulte cross-DB. Best-effort: no romper el preview si falla.
+            if order_status == "cancelled":
+                try:
+                    _store_cancelled_order(order_data)
+                except Exception as e:
+                    print(f"⚠️ No se pudo persistir cancelación de {resource}:", e)
 
         # ----- CUALQUIER OTRO TOPIC (no romper) -----
         else:

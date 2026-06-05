@@ -26,3 +26,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_cancelled_orders_date_closed
 
 CREATE INDEX IF NOT EXISTS idx_ml_cancelled_orders_cancelled_at
     ON ml_cancelled_orders (cancelled_at DESC);
+
+-- mluser es el rol de runtime (ml-webhook escribe, pricing-app lee/escribe
+-- el backfill cross-DB). Las migraciones corren con otro owner, así que el
+-- GRANT explícito es obligatorio.
+GRANT SELECT, INSERT, UPDATE, DELETE ON ml_cancelled_orders TO mluser;

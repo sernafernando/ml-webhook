@@ -1994,6 +1994,65 @@ def ml_preview():
 
     return jsonify(fetch_and_store_preview(resource))
 
+def _render_shipping_cost_section(mla_id, item_data, headers):
+    """Fetch /users/{seller_id}/shipping_options/free (verbose) and render the
+    FULL coverage values — the same query the persistence path uses to populate
+    ml_seller_shipping_costs (what pricing reads). Best-effort, never raises.
+    """
+    try:
+        # seller_id: prefer the item's own seller (matches the persistence
+        # path); fall back to our own seller (ml_tokens.user_id, like /debug).
+        seller_id = (item_data or {}).get("seller_id")
+        if seller_id is None:
+            with db_cursor() as cur:
+                cur.execute("SELECT user_id FROM ml_tokens WHERE id = 1")
+                row = cur.fetchone()
+            seller_id = row[0] if row else None
+        if seller_id is None:
+            return "<div class='alert alert-warning'>⚠️ No se pudo resolver seller_id para el costo de envío.</div>"
+
+        url = f"https://api.mercadolibre.com/users/{seller_id}/shipping_options/free"
+        res = ml_api_get(url, headers=headers, params={"item_id": mla_id, "verbose": "true"})
+        if res.status_code != 200:
+            return f"<div class='alert alert-warning'>⚠️ shipping_options/free status={res.status_code} para {mla_id}.</div>"
+
+        body = res.json()
+        cov = ((body or {}).get("coverage") or {}).get("all_country") or {}
+        list_cost = cov.get("list_cost")
+        currency_id = cov.get("currency_id")
+        billable_weight = cov.get("billable_weight")
+        discount = cov.get("discount") or {}
+        promoted_amount = discount.get("promoted_amount")
+        rate = discount.get("rate")
+        dtype = discount.get("type")
+
+        raw_json = json.dumps(body, indent=2, ensure_ascii=False)
+        request_url = f"{url}?item_id={mla_id}&verbose=true"
+
+        return f"""
+        <div class="card bg-secondary text-light mt-4">
+          <div class="card-header"><strong>🚚 Costo de envío (shipping_options/free)</strong></div>
+          <div class="card-body">
+            <p class="small text-warning mb-2">seller_id={seller_id} · <code>{request_url}</code></p>
+            <table class="table table-dark table-sm align-middle">
+              <tbody>
+                <tr><td><strong>list_cost</strong> (← este guardamos / lee pricing)</td><td>{list_cost} {currency_id or ""}</td></tr>
+                <tr><td>billable_weight</td><td>{billable_weight}</td></tr>
+                <tr><td>discount.promoted_amount</td><td>{promoted_amount}</td></tr>
+                <tr><td>discount.rate</td><td>{rate}</td></tr>
+                <tr><td>discount.type</td><td>{dtype}</td></tr>
+              </tbody>
+            </table>
+            <details><summary class="small">Ver JSON completo</summary>
+              <pre class="small bg-dark p-2 mt-2" style="white-space:pre-wrap;">{raw_json}</pre>
+            </details>
+          </div>
+        </div>
+        """
+    except Exception as e:
+        return f"<div class='alert alert-warning'>⚠️ Error obteniendo costo de envío: {e}</div>"
+
+
 @app.route("/consulta", methods=["GET", "POST"])
 def consulta():
     item_id = None
@@ -2032,6 +2091,7 @@ def consulta():
                     headers = {"Authorization": f"Bearer {token}"}
                     res = ml_api_get(f"https://api.mercadolibre.com{resource}", headers=headers)
                     data = res.json()
+                    shipping_cost_html = _render_shipping_cost_section(item_id, data, headers)
                 except Exception as e:
                     error = str(e)
 
@@ -2068,6 +2128,8 @@ def consulta():
 
     if data:
         html_parts.append(render_ml_view(resource, data))
+        if 'shipping_cost_html' in locals() and shipping_cost_html:
+            html_parts.append(shipping_cost_html)
     elif 'catalog_inline_html' in locals() and catalog_inline_html:
         html_parts.append(catalog_inline_html)
 

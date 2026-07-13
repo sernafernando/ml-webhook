@@ -2779,6 +2779,233 @@ def debug_token():
         return jsonify({"error": str(e)}), 500
 
 
+# -------------------------------------------------------------
+# Central de Promociones (Seller Promotions API v2) — Fase 1
+# Endpoints JSON en vivo para consumir desde pricing-app.
+# Reusan get_token() + ml_api_get(). Un unico vendedor:
+# seller_id sale de ml_tokens.user_id (fila id=1).
+# -------------------------------------------------------------
+def _promos_seller_id():
+    with db_cursor() as cur:
+        cur.execute("SELECT user_id FROM ml_tokens WHERE id = 1")
+        row = cur.fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+def _ml_promos_get(resource, extra_params=None):
+    """GET a la API de seller-promotions forzando app_version=v2.
+    Hace passthrough de los query params del cliente (menos app_version).
+    Devuelve (payload, status_code)."""
+    token = get_token()
+    params = {k: v for k, v in request.args.items() if k != "app_version"}
+    if extra_params:
+        params.update(extra_params)
+    params["app_version"] = "v2"
+    res = ml_api_get(
+        f"https://api.mercadolibre.com{resource}",
+        headers={"Authorization": f"Bearer {token}"},
+        params=params,
+    )
+    try:
+        return res.json(), res.status_code
+    except Exception:
+        return {"error": "respuesta no-JSON de ML", "raw": res.text}, res.status_code
+
+
+@app.route("/api/promociones", methods=["GET"])
+def api_promociones():
+    """Lista todas las promociones del vendedor (Central de Promociones v2).
+    Passthrough de GET /seller-promotions/users/{seller_id}.
+    Filtros/paginacion de ML via query params (status, promotion_type, limit, offset, search_after...)."""
+    try:
+        seller_id = _promos_seller_id()
+        if seller_id is None:
+            return jsonify({"error": "seller_id no disponible (ml_tokens.user_id fila id=1)"}), 500
+        data, status = _ml_promos_get(f"/seller-promotions/users/{seller_id}")
+        return jsonify(data), status
+    except Exception as e:
+        print("❌ Error en /api/promociones:", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/promociones/<promo_id>/items", methods=["GET"])
+def api_promociones_items(promo_id):
+    """Items dentro de una promocion.
+    Passthrough de GET /seller-promotions/promotions/{promo_id}/items.
+    ML exige ?promotion_type=... (ej: DEAL, PRICE_DISCOUNT, MARKETPLACE_CAMPAIGN, etc)."""
+    try:
+        if not request.args.get("promotion_type"):
+            return jsonify({"error": "Falta query param 'promotion_type' (requerido por ML)"}), 400
+        data, status = _ml_promos_get(f"/seller-promotions/promotions/{promo_id}/items")
+        return jsonify(data), status
+    except Exception as e:
+        print("❌ Error en /api/promociones/items:", e)
+        return jsonify({"error": str(e)}), 500
+
+
+def _ml_promos_write(method, resource, json_body=None, extra_params=None):
+    """POST/DELETE a seller-promotions. SINGLE-SHOT: no reintenta (toca precios reales).
+    Un 5xx/timeout en escritura es ambiguo (no sabes si ML lo aplico), por eso no hay retry.
+    Respeta el throttle global de ML. Devuelve (payload, status_code)."""
+    global _ml_api_last_call
+    token = get_token()
+    params = {k: v for k, v in request.args.items() if k != "app_version"}
+    if extra_params:
+        params.update(extra_params)
+    params["app_version"] = "v2"
+    with _ml_api_lock:
+        wait = _ml_api_min_interval - (time.time() - _ml_api_last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _ml_api_last_call = time.time()
+    res = requests.request(
+        method,
+        f"https://api.mercadolibre.com{resource}",
+        headers={"Authorization": f"Bearer {token}"},
+        params=params,
+        json=json_body,
+        timeout=30,
+    )
+    try:
+        return res.json(), res.status_code
+    except Exception:
+        return {"error": "respuesta no-JSON de ML", "raw": res.text}, res.status_code
+
+
+def _promos_price_guard(body):
+    """Devuelve lista de errores si detecta precios invalidos (<=0 o no numericos).
+    Type-agnostic: solo chequea campos de precio presentes, no impone estructura de payload."""
+    errs = []
+
+    def _check(name, val):
+        if val is None:
+            return
+        try:
+            f = float(val)
+        except (TypeError, ValueError):
+            errs.append(f"{name} no es numerico: {val!r}")
+            return
+        if f <= 0:
+            errs.append(f"{name} debe ser > 0 (recibido {f})")
+
+    _check("deal_price", body.get("deal_price"))
+    _check("top_deal_price", body.get("top_deal_price"))
+    offers = body.get("offers")
+    if isinstance(offers, list):
+        for idx, off in enumerate(offers):
+            if isinstance(off, dict):
+                for k in ("new_price", "deal_price", "price"):
+                    if k in off:
+                        _check(f"offers[{idx}].{k}", off.get(k))
+    return errs
+
+
+@app.route("/api/promociones/item/<mla>", methods=["GET", "POST", "DELETE"])
+def api_promociones_item(mla):
+    """Promociones de un item puntual (Central de Promociones v2).
+    GET    -> promos disponibles/activas para el item (lectura).
+    POST   -> inscribe/actualiza el item en una promo (ESCRITURA: toca precio real).
+    DELETE -> saca el item de una promo (ESCRITURA)."""
+    if request.method == "GET":
+        try:
+            data, status = _ml_promos_get(f"/seller-promotions/items/{mla}")
+            return jsonify(data), status
+        except Exception as e:
+            print("❌ Error en GET /api/promociones/item:", e)
+            return jsonify({"error": str(e)}), 500
+
+    # Kill-switch de ops para toda escritura (emergencia sin deploy).
+    if os.getenv("PROMOS_WRITE_ENABLED", "1") != "1":
+        return jsonify({"error": "Escritura de promociones deshabilitada (PROMOS_WRITE_ENABLED != 1)"}), 503
+
+    if request.method == "POST":
+        try:
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict):
+                return jsonify({"error": "Body JSON requerido (objeto con promotion_id, promotion_type, deal_price/offers...)"}), 400
+            if not body.get("promotion_type"):
+                return jsonify({"error": "Falta 'promotion_type' en el body (requerido por ML)"}), 400
+            price_errs = _promos_price_guard(body)
+            if price_errs:
+                return jsonify({"error": "Precios invalidos", "detalle": price_errs}), 400
+            print(f"📝 PROMO WRITE POST mla={mla} type={body.get('promotion_type')} "
+                  f"promo_id={body.get('promotion_id')} deal_price={body.get('deal_price')} "
+                  f"top_deal_price={body.get('top_deal_price')}")
+            data, status = _ml_promos_write("POST", f"/seller-promotions/items/{mla}", json_body=body)
+            print(f"📝 PROMO WRITE POST mla={mla} -> {status}")
+            return jsonify(data), status
+        except Exception as e:
+            print("❌ Error en POST /api/promociones/item:", e)
+            return jsonify({"error": str(e)}), 500
+
+    if request.method == "DELETE":
+        try:
+            if not request.args.get("promotion_type"):
+                return jsonify({"error": "Falta query param 'promotion_type' (requerido por ML para DELETE)"}), 400
+            print(f"🗑️ PROMO WRITE DELETE mla={mla} type={request.args.get('promotion_type')} "
+                  f"promo_id={request.args.get('promotion_id')}")
+            data, status = _ml_promos_write("DELETE", f"/seller-promotions/items/{mla}")
+            print(f"🗑️ PROMO WRITE DELETE mla={mla} -> {status}")
+            return jsonify(data), status
+        except Exception as e:
+            print("❌ Error en DELETE /api/promociones/item:", e)
+            return jsonify({"error": str(e)}), 500
+
+
+@app.route("/debug/promos")
+def debug_promos():
+    """TEMPORARY — probe empirica read-only para Central de Promociones (v2).
+    Sin escritura. Vuelca:
+      - la lista de promos del vendedor (/seller-promotions/users/{seller_id})
+      - si ?mla=MLA...  -> promos disponibles/activas de ese item
+      - si ?promo_id=&promotion_type=  -> items dentro de esa promo
+    Sirve para ver la estructura EXACTA que espera ML antes de escribir.
+    Borrar una vez confirmado el contrato de payload."""
+    try:
+        token = get_token()
+
+        def _probe(resource, extra=None):
+            params = {"app_version": "v2"}
+            if extra:
+                params.update(extra)
+            res = ml_api_get(
+                f"https://api.mercadolibre.com{resource}",
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+            )
+            try:
+                return {"status": res.status_code, "data": res.json()}
+            except Exception:
+                return {"status": res.status_code, "raw": res.text}
+
+        seller_id = _promos_seller_id()
+        if seller_id is None:
+            return jsonify({"error": "seller_id no disponible (ml_tokens.user_id fila id=1)"}), 500
+
+        out = {"seller_id": seller_id}
+        out["promotions"] = _probe(f"/seller-promotions/users/{seller_id}")
+
+        mla = (request.args.get("mla") or "").strip()
+        if mla:
+            out["item"] = {"mla": mla, **_probe(f"/seller-promotions/items/{mla}")}
+
+        promo_id = (request.args.get("promo_id") or "").strip()
+        promotion_type = (request.args.get("promotion_type") or "").strip()
+        if promo_id and promotion_type:
+            out["promo_items"] = {
+                "promo_id": promo_id,
+                "promotion_type": promotion_type,
+                **_probe(f"/seller-promotions/promotions/{promo_id}/items",
+                         {"promotion_type": promotion_type}),
+            }
+
+        return jsonify(out)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 # TEMPORARY — empirical probe for /users/{user_id}/shipping_options/free
 # Remove once seller_shipping_costs schema is finalized.
 @app.route("/debug/seller-shipping-cost")

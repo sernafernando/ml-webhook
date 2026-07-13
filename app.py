@@ -2812,6 +2812,111 @@ def _ml_promos_get(resource, extra_params=None):
         return {"error": "respuesta no-JSON de ML", "raw": res.text}, res.status_code
 
 
+def _promo_num(v):
+    """Convierte a float o None (para columnas NUMERIC)."""
+    if v in (None, ""):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _upsert_item_promo(cur, mla, promo_key, promo_type, sub_type, entry):
+    cur.execute("""
+        INSERT INTO ml_item_promotions (
+            mla, promotion_id, promotion_type, sub_type, status,
+            original_price, price, min_discounted_price, max_discounted_price,
+            suggested_discounted_price, payload, updated_at
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+        ON CONFLICT (mla, promotion_id) DO UPDATE SET
+            promotion_type = EXCLUDED.promotion_type,
+            sub_type = EXCLUDED.sub_type,
+            status = EXCLUDED.status,
+            original_price = EXCLUDED.original_price,
+            price = EXCLUDED.price,
+            min_discounted_price = EXCLUDED.min_discounted_price,
+            max_discounted_price = EXCLUDED.max_discounted_price,
+            suggested_discounted_price = EXCLUDED.suggested_discounted_price,
+            payload = EXCLUDED.payload,
+            updated_at = NOW();
+    """, (
+        mla, promo_key, promo_type, sub_type, entry.get("status"),
+        _promo_num(entry.get("original_price")), _promo_num(entry.get("price")),
+        _promo_num(entry.get("min_discounted_price")),
+        _promo_num(entry.get("max_discounted_price")),
+        _promo_num(entry.get("suggested_discounted_price")), Json(entry),
+    ))
+
+
+def _persist_promotions(data):
+    """Write-through best-effort: catalogo de promos del vendedor -> ml_promotions.
+    Nunca rompe la respuesta en vivo: loguea y sigue si la DB falla."""
+    try:
+        results = data.get("results") if isinstance(data, dict) else None
+        if not results:
+            return
+        with db_cursor() as cur:
+            for p in results:
+                if not isinstance(p, dict) or not p.get("id"):
+                    continue
+                cur.execute("""
+                    INSERT INTO ml_promotions (
+                        promotion_id, promotion_type, sub_type, status, name,
+                        start_date, finish_date, deadline_date, payload, updated_at
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                    ON CONFLICT (promotion_id) DO UPDATE SET
+                        promotion_type = EXCLUDED.promotion_type,
+                        sub_type = EXCLUDED.sub_type,
+                        status = EXCLUDED.status,
+                        name = EXCLUDED.name,
+                        start_date = EXCLUDED.start_date,
+                        finish_date = EXCLUDED.finish_date,
+                        deadline_date = EXCLUDED.deadline_date,
+                        payload = EXCLUDED.payload,
+                        updated_at = NOW();
+                """, (
+                    p.get("id"), p.get("type"), p.get("sub_type"), p.get("status"),
+                    p.get("name"), p.get("start_date"), p.get("finish_date"),
+                    p.get("deadline_date"), Json(p),
+                ))
+    except Exception as e:
+        print("⚠️ write-through ml_promotions fallo:", e)
+
+
+def _persist_item_promos(mla, data):
+    """Write-through: promos (candidate/started) de un item -> ml_item_promotions."""
+    try:
+        if not isinstance(data, list):
+            return
+        with db_cursor() as cur:
+            for e in data:
+                if not isinstance(e, dict):
+                    continue
+                promo_key = e.get("id") or e.get("type")  # PRICE_DISCOUNT no trae id
+                if not promo_key:
+                    continue
+                _upsert_item_promo(cur, mla, promo_key, e.get("type"), e.get("sub_type"), e)
+    except Exception as ex:
+        print("⚠️ write-through ml_item_promotions (item) fallo:", ex)
+
+
+def _persist_promo_items(promo_id, promotion_type, data):
+    """Write-through: items dentro de una promo -> ml_item_promotions."""
+    try:
+        results = data.get("results") if isinstance(data, dict) else None
+        if not results:
+            return
+        with db_cursor() as cur:
+            for e in results:
+                if not isinstance(e, dict) or not e.get("id"):
+                    continue
+                _upsert_item_promo(cur, e.get("id"), promo_id, promotion_type,
+                                   e.get("sub_type"), e)
+    except Exception as ex:
+        print("⚠️ write-through ml_item_promotions (promo) fallo:", ex)
+
+
 @app.route("/api/promociones", methods=["GET"])
 def api_promociones():
     """Lista todas las promociones del vendedor (Central de Promociones v2).
@@ -2822,6 +2927,8 @@ def api_promociones():
         if seller_id is None:
             return jsonify({"error": "seller_id no disponible (ml_tokens.user_id fila id=1)"}), 500
         data, status = _ml_promos_get(f"/seller-promotions/users/{seller_id}")
+        if status == 200:
+            _persist_promotions(data)
         return jsonify(data), status
     except Exception as e:
         print("❌ Error en /api/promociones:", e)
@@ -2837,6 +2944,8 @@ def api_promociones_items(promo_id):
         if not request.args.get("promotion_type"):
             return jsonify({"error": "Falta query param 'promotion_type' (requerido por ML)"}), 400
         data, status = _ml_promos_get(f"/seller-promotions/promotions/{promo_id}/items")
+        if status == 200:
+            _persist_promo_items(promo_id, request.args.get("promotion_type"), data)
         return jsonify(data), status
     except Exception as e:
         print("❌ Error en /api/promociones/items:", e)
@@ -2912,6 +3021,8 @@ def api_promociones_item(mla):
     if request.method == "GET":
         try:
             data, status = _ml_promos_get(f"/seller-promotions/items/{mla}")
+            if status == 200:
+                _persist_item_promos(mla, data)
             return jsonify(data), status
         except Exception as e:
             print("❌ Error en GET /api/promociones/item:", e)

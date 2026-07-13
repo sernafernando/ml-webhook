@@ -2866,6 +2866,9 @@ def _ml_promos_write(method, resource, json_body=None, extra_params=None):
         json=json_body,
         timeout=30,
     )
+    if not res.content:
+        # ML devuelve body vacio en DELETE (y algunos POST) exitosos.
+        return {"ok": res.ok}, res.status_code
     try:
         return res.json(), res.status_code
     except Exception:

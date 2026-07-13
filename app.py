@@ -85,6 +85,8 @@ WEBHOOKS_CURSOR_MODE = os.getenv("WEBHOOKS_CURSOR_MODE", "0") == "1"
 WEBHOOK_TOPICS_CACHE_TTL = float(os.getenv("WEBHOOK_TOPICS_CACHE_TTL", "10"))
 PREVIEW_QUEUE_KEY = os.getenv("PREVIEW_QUEUE_KEY", "queue:preview:resources")
 PREVIEW_DEAD_QUEUE_KEY = os.getenv("PREVIEW_DEAD_QUEUE_KEY", "queue:preview:dead")
+PROMOS_DIRTY_SET_KEY = os.getenv("PROMOS_DIRTY_SET_KEY", "promos:dirty:mlas")
+PROMOS_WEBHOOK_ENABLED = os.getenv("PROMOS_WEBHOOK_ENABLED", "1") == "1"
 
 _topics_cache = {"value": None, "expires_at": 0.0}
 _topics_cache_lock = threading.Lock()
@@ -1668,7 +1670,9 @@ def webhook():
 
         # Refrescar preview del MISMO resource (no rompe el webhook si falla)
         try:
-            if resource:
+            if resource.startswith("/seller-promotions/"):
+                _process_promotion_webhook(resource)
+            elif resource:
                 if WEBHOOK_PREVIEW_ASYNC:
                     enqueued, enqueue_err = _enqueue_preview_job(resource)
                     if not enqueued:
@@ -2915,6 +2919,88 @@ def _persist_promo_items(promo_id, promotion_type, data):
                                    e.get("sub_type"), e)
     except Exception as ex:
         print("⚠️ write-through ml_item_promotions (promo) fallo:", ex)
+
+
+def _promo_resource_mla(resource):
+    """Extrae el MLA embebido en un resource de seller-promotions.
+    Ej: /seller-promotions/offers/OFFER-MLA1632687413-111 -> MLA1632687413."""
+    last = (resource or "").rstrip("/").split("/")[-1]
+    for part in last.split("-"):
+        if part.startswith("MLA"):
+            return part
+    return None
+
+
+def _promos_api_get(resource):
+    """GET request-free (sin contexto Flask) a seller-promotions con app_version=v2.
+    Usable desde el worker."""
+    token = get_token()
+    return ml_api_get(
+        f"https://api.mercadolibre.com{resource}",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"app_version": "v2"},
+    )
+
+
+def _upsert_item_promo_status(cur, mla, promo_key, promo_type, status, detail):
+    """Upsert PARCIAL (webhook): actualiza estado sin pisar precios ni el payload
+    de lectura. En fila nueva inserta con precios NULL y el payload del offer/candidate."""
+    cur.execute("""
+        INSERT INTO ml_item_promotions (mla, promotion_id, promotion_type, status, payload, updated_at)
+        VALUES (%s,%s,%s,%s,%s,NOW())
+        ON CONFLICT (mla, promotion_id) DO UPDATE SET
+            promotion_type = COALESCE(EXCLUDED.promotion_type, ml_item_promotions.promotion_type),
+            status = EXCLUDED.status,
+            updated_at = NOW();
+    """, (mla, promo_key, promo_type, status, Json(detail)))
+
+
+def reconcile_item_promotions(mla):
+    """Reconcilia TODAS las promos de un MLA via /seller-promotions/items/{mla}
+    y persiste con precios (reusa _persist_item_promos). Lo usa worker_promos."""
+    res = _promos_api_get(f"/seller-promotions/items/{mla}")
+    if res.status_code == 200:
+        _persist_item_promos(mla, res.json())
+        return True
+    print(f"⚠️ reconcile promos {mla} -> ML {res.status_code}")
+    return False
+
+
+def _process_promotion_candidate(resource):
+    """Candidate (bajo volumen): fetch del detalle + upsert de estado."""
+    res = _promos_api_get(resource)
+    if res.status_code != 200:
+        print(f"⚠️ candidate {resource} -> ML {res.status_code}")
+        return
+    d = res.json()
+    mla = d.get("item_id")
+    if not mla:
+        return
+    promo_key = d.get("promotion_id") or d.get("type")
+    if not promo_key:
+        return
+    status = d.get("status")
+    if isinstance(status, dict):
+        status = status.get("id")
+    with db_cursor() as cur:
+        _upsert_item_promo_status(cur, mla, promo_key, d.get("type"), status, d)
+
+
+def _process_promotion_webhook(resource):
+    """Router de webhooks seller-promotions. Best-effort, nunca rompe el webhook.
+    - candidates (~2/min): procesa sync (fetch + upsert estado).
+    - offers (flood): encola el MLA en un set redis; lo reconcilia worker_promos."""
+    if not PROMOS_WEBHOOK_ENABLED:
+        return
+    try:
+        if "/candidates/" in resource:
+            _process_promotion_candidate(resource)
+        elif "/offers/" in resource:
+            mla = _promo_resource_mla(resource)
+            if mla and _redis_client is not None:
+                _redis_client.sadd(PROMOS_DIRTY_SET_KEY, mla)
+    except Exception as e:
+        print("⚠️ promo webhook fallo:", e)
 
 
 @app.route("/api/promociones", methods=["GET"])

@@ -2961,13 +2961,27 @@ def _upsert_item_promo_status(cur, mla, promo_key, promo_type, status, detail):
 
 def reconcile_item_promotions(mla):
     """Reconcilia TODAS las promos de un MLA via /seller-promotions/items/{mla}
-    y persiste con precios (reusa _persist_item_promos). Lo usa worker_promos."""
+    y persiste con precios (reusa _persist_item_promos). Lo usa worker_promos.
+    Cierra el set: baja a 'finished' las filas 'started' de este MLA que ML ya no
+    reporta (el item salio de esa promo), para no dejar 'started' pegados."""
     res = _promos_api_get(f"/seller-promotions/items/{mla}")
-    if res.status_code == 200:
-        _persist_item_promos(mla, res.json())
-        return True
-    print(f"⚠️ reconcile promos {mla} -> ML {res.status_code}")
-    return False
+    if res.status_code != 200:
+        print(f"⚠️ reconcile promos {mla} -> ML {res.status_code}")
+        return False
+    data = res.json()
+    _persist_item_promos(mla, data)
+    if isinstance(data, list) and data:
+        current = [k for k in ((e.get("id") or e.get("type")) for e in data if isinstance(e, dict)) if k]
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    "UPDATE ml_item_promotions SET status='finished', updated_at=NOW() "
+                    "WHERE mla=%s AND status='started' AND NOT (promotion_id = ANY(%s))",
+                    (mla, current),
+                )
+        except Exception as e:
+            print("⚠️ reconcile close-set fallo:", e)
+    return True
 
 
 def _process_promotion_candidate(resource):

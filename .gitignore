@@ -63,3 +63,9 @@ PROMPT_*.md
 .env
 .env.local
 .env.*.local
+
+# =========================
+# Local / editor artifacts
+# =========================
+.atl/
+Untitled

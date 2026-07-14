@@ -2931,14 +2931,18 @@ def _promo_resource_mla(resource):
     return None
 
 
-def _promos_api_get(resource):
+def _promos_api_get(resource, extra_params=None):
     """GET request-free (sin contexto Flask) a seller-promotions con app_version=v2.
-    Usable desde el worker."""
+    extra_params: dict opcional (promotion_type, limit, search_after, offset...) que
+    requests URL-encodea. Usable desde el worker y el backfill."""
     token = get_token()
+    params = {"app_version": "v2"}
+    if extra_params:
+        params.update(extra_params)
     return ml_api_get(
         f"https://api.mercadolibre.com{resource}",
         headers={"Authorization": f"Bearer {token}"},
-        params={"app_version": "v2"},
+        params=params,
     )
 
 

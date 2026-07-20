@@ -3170,6 +3170,19 @@ def api_promociones_item(mla):
             return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/promociones/item/<mla>/refresh", methods=["POST"])
+def api_promociones_refresh(mla):
+    """Refresca ml_item_promotions para UN MLA on-demand (post aplicar/desaplicar).
+    Reusa reconcile_item_promotions: GET live /seller-promotions/items/{mla} +
+    upsert + close-set (baja 'started' huerfanos a 'finished'). Idempotente."""
+    try:
+        ok = reconcile_item_promotions(mla)
+        return jsonify({"mla": mla, "refreshed": ok}), (200 if ok else 502)
+    except Exception as e:
+        print("❌ Error en refresh /api/promociones/item:", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/debug/promos")
 def debug_promos():
     """TEMPORARY — probe empirica read-only para Central de Promociones (v2).

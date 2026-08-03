@@ -3183,6 +3183,151 @@ def api_promociones_refresh(mla):
         return jsonify({"error": str(e)}), 500
 
 
+# -------------------------------------------------------------
+# PxQ / Precio por Cantidad (precios mayoristas)
+# Proxy delgado para pricing-app. Sin logica de negocio: la validacion
+# (max 5 tramos, cantidad minima, precios decrecientes) vive del otro lado.
+# Docs: https://developers.mercadolibre.com.ar/es_ar/precio-por-cantidad
+#
+# Los timeouts son deliberadamente MENORES que los del cliente
+# (lectura 10s / escritura 15s) para que este proxy devuelva un status real
+# antes de que el cliente corte y clasifique la escritura como ambigua.
+# -------------------------------------------------------------
+PXQ_READ_TIMEOUT = 8
+PXQ_WRITE_TIMEOUT = 12
+PXQ_CURRENCY_ID = "ARS"
+PXQ_CONTEXT_RESTRICTIONS = ["channel_marketplace", "user_type_business"]
+
+
+def _ml_pxq_throttle():
+    """Respeta el throttle global de ML."""
+    global _ml_api_last_call
+    with _ml_api_lock:
+        wait = _ml_api_min_interval - (time.time() - _ml_api_last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _ml_api_last_call = time.time()
+
+
+def _ml_pxq_payload(res):
+    if not res.content:
+        return {"ok": res.ok}
+    try:
+        return res.json()
+    except Exception:
+        return {"error": "respuesta no-JSON de ML", "raw": res.text}
+
+
+def _flatten_pxq_prices(data):
+    """Aplana la respuesta de GET /items/{id}/prices a los tramos PxQ.
+    Un tramo PxQ es toda entrada con conditions.min_purchase_unit."""
+    prices = data.get("prices") if isinstance(data, dict) else None
+    tramos = []
+    for entry in prices or []:
+        if not isinstance(entry, dict):
+            continue
+        conditions = entry.get("conditions") or {}
+        min_unit = conditions.get("min_purchase_unit")
+        if min_unit is None:
+            continue
+        tramos.append({
+            "id": entry.get("id"),
+            "quantity": min_unit,
+            "amount": entry.get("amount"),
+        })
+    return tramos
+
+
+def _pxq_to_ml_prices(entries):
+    """Traduce la forma simplificada del cliente a la forma nativa de ML.
+      {"id": "2"}                      -> conservar el tramo tal cual
+      {"quantity": 10, "amount": 2850} -> crear el tramo
+    NO agrega, quita, ordena ni deduplica: el POST de ML reemplaza el array
+    completo y el cliente ya calcula el array final.
+    Devuelve (prices, errores)."""
+    prices = []
+    errors = []
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            errors.append(f"prices[{idx}] debe ser un objeto")
+            continue
+        if entry.get("id") is not None:
+            prices.append({"id": entry["id"]})
+            continue
+        if entry.get("quantity") is None or entry.get("amount") is None:
+            errors.append(f"prices[{idx}] necesita 'id' o bien 'quantity' + 'amount'")
+            continue
+        prices.append({
+            "amount": entry["amount"],
+            "currency_id": PXQ_CURRENCY_ID,
+            "conditions": {
+                "context_restrictions": list(PXQ_CONTEXT_RESTRICTIONS),
+                "min_purchase_unit": entry["quantity"],
+            },
+        })
+    return prices, errors
+
+
+@app.route("/api/pxq/item/<item_id>", methods=["GET"])
+def api_pxq_item_get(item_id):
+    """Tramos PxQ VIVOS de la publicacion, aplanados y como array pelado.
+    Nunca se cachea: pricing-app la usa como lectura fresca justo antes de
+    escribir para detectar cambios hechos por fuera."""
+    try:
+        _ml_pxq_throttle()
+        res = requests.get(
+            f"https://api.mercadolibre.com/items/{item_id}/prices",
+            headers={"Authorization": f"Bearer {get_token()}"},
+            timeout=PXQ_READ_TIMEOUT,
+        )
+        payload = _ml_pxq_payload(res)
+        if res.status_code != 200:
+            return jsonify(payload), res.status_code
+        response = jsonify(_flatten_pxq_prices(payload))
+        response.headers["Cache-Control"] = "no-store"
+        return response, 200
+    except requests.Timeout:
+        print(f"⏱️ PXQ READ timeout item={item_id}")
+        return jsonify({"error": "timeout leyendo precios en ML"}), 504
+    except Exception as e:
+        print("❌ Error en GET /api/pxq/item:", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/pxq/item/<item_id>", methods=["POST"])
+def api_pxq_item_post(item_id):
+    """Escribe los tramos PxQ. SINGLE-SHOT: no reintenta.
+    El POST de ML REEMPLAZA el array completo (no es PATCH): todo tramo que no
+    venga en el body se borra. Se manda exactamente lo recibido, traducido.
+    El status code de ML se preserva tal cual: un 5xx convertido en 2xx haria
+    que pricing-app registre una escritura que nunca ocurrio."""
+    try:
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or not isinstance(body.get("prices"), list):
+            return jsonify({"error": "Body JSON requerido: {\"prices\": [...]}"}), 400
+        prices, errors = _pxq_to_ml_prices(body["prices"])
+        if errors:
+            return jsonify({"error": "Payload PxQ invalido", "detalle": errors}), 400
+
+        print(f"📝 PXQ WRITE item={item_id} tramos={len(prices)}")
+        _ml_pxq_throttle()
+        res = requests.request(
+            "POST",
+            f"https://api.mercadolibre.com/items/{item_id}/prices/standard/quantity",
+            headers={"Authorization": f"Bearer {get_token()}"},
+            json={"prices": prices},
+            timeout=PXQ_WRITE_TIMEOUT,
+        )
+        print(f"📝 PXQ WRITE item={item_id} -> {res.status_code}")
+        return jsonify(_ml_pxq_payload(res)), res.status_code
+    except requests.Timeout:
+        print(f"⏱️ PXQ WRITE timeout item={item_id} (ambiguo: pudo haberse aplicado)")
+        return jsonify({"error": "timeout escribiendo precios en ML (ambiguo)"}), 504
+    except Exception as e:
+        print("❌ Error en POST /api/pxq/item:", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/debug/promos")
 def debug_promos():
     """TEMPORARY — probe empirica read-only para Central de Promociones (v2).

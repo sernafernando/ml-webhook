@@ -1,0 +1,4 @@
+# Normalize line endings to LF for every text file.
+# app.py used to carry mixed CRLF/LF endings, which made editors rewrite
+# unrelated lines and turned small edits into thousand-line diffs.
+* text=auto eol=lf

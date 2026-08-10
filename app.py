@@ -3198,6 +3198,13 @@ PXQ_WRITE_TIMEOUT = 12
 PXQ_CURRENCY_ID = "ARS"
 PXQ_CONTEXT_RESTRICTIONS = ["channel_marketplace", "user_type_business"]
 
+# Sin este header, GET /items/{id}/prices responde 200 pero OMITE los nodos
+# con conditions.min_purchase_unit: se ven el precio standard y las promos,
+# y los tramos PxQ desaparecen. Un 200 incompleto es indistinguible de "no
+# hay tramos", y sobre el POST -que reemplaza el array completo- eso borra
+# los tramos vivos. No sacar.
+PXQ_SHOW_ALL_PRICES_HEADER = {"show-all-prices": "true"}
+
 
 def _ml_pxq_throttle():
     """Respeta el throttle global de ML."""
@@ -3220,10 +3227,16 @@ def _ml_pxq_payload(res):
 
 def _flatten_pxq_prices(data):
     """Aplana la respuesta de GET /items/{id}/prices a los tramos PxQ.
-    Un tramo PxQ es toda entrada con conditions.min_purchase_unit."""
-    prices = data.get("prices") if isinstance(data, dict) else None
+    Un tramo PxQ es toda entrada con conditions.min_purchase_unit.
+
+    Devuelve None si la respuesta no tiene la forma esperada. Ese None NO es
+    lo mismo que []: [] afirma "ML no tiene tramos", y esa afirmacion no la
+    tenemos si no entendimos el cuerpo. El caller lo traduce a 502."""
+    if not isinstance(data, dict) or not isinstance(data.get("prices"), list):
+        return None
+    prices = data["prices"]
     tramos = []
-    for entry in prices or []:
+    for entry in prices:
         if not isinstance(entry, dict):
             continue
         conditions = entry.get("conditions") or {}
@@ -3277,13 +3290,21 @@ def api_pxq_item_get(item_id):
         _ml_pxq_throttle()
         res = requests.get(
             f"https://api.mercadolibre.com/items/{item_id}/prices",
-            headers={"Authorization": f"Bearer {get_token()}"},
+            headers={
+                "Authorization": f"Bearer {get_token()}",
+                **PXQ_SHOW_ALL_PRICES_HEADER,
+            },
             timeout=PXQ_READ_TIMEOUT,
         )
         payload = _ml_pxq_payload(res)
         if res.status_code != 200:
             return jsonify(payload), res.status_code
-        response = jsonify(_flatten_pxq_prices(payload))
+        tramos = _flatten_pxq_prices(payload)
+        if tramos is None:
+            print(f"❌ PXQ READ item={item_id} 200 con forma inesperada: {res.text[:300]}")
+            return jsonify({"error": "respuesta de precios de ML con forma inesperada"}), 502
+        print(f"🔎 PXQ READ item={item_id} -> {len(tramos)} tramos")
+        response = jsonify(tramos)
         response.headers["Cache-Control"] = "no-store"
         return response, 200
     except requests.Timeout:

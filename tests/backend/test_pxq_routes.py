@@ -61,6 +61,24 @@ def test_get_pxq_devuelve_array_pelado_y_aplanado(client, monkeypatch):
     ]
 
 
+def test_get_pxq_pide_show_all_prices(client, monkeypatch):
+    """Sin este header ML responde 200 omitiendo los nodos con
+    min_purchase_unit: los tramos vivos se leen como 'no hay tramos'."""
+    calls = {}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["headers"] = headers or {}
+        return _Resp(payload={"prices": []})
+
+    monkeypatch.setattr(app_module.requests, "get", fake_get)
+
+    client.get("/api/pxq/item/MLA123")
+
+    enviados = {k.lower(): v for k, v in calls["headers"].items()}
+    assert enviados.get("show-all-prices") == "true"
+    assert enviados.get("authorization") == "Bearer TOKEN"
+
+
 def test_get_pxq_sin_tramos_devuelve_lista_vacia(client, monkeypatch):
     monkeypatch.setattr(
         app_module.requests, "get",
@@ -92,6 +110,48 @@ def test_get_pxq_preserva_status_de_ml(client, monkeypatch):
     res = client.get("/api/pxq/item/MLA123")
 
     assert res.status_code == 404
+
+
+def test_get_pxq_forma_inesperada_es_502_y_no_lista_vacia(client, monkeypatch):
+    """[] afirma 'ML no tiene tramos'. Si no entendimos el cuerpo no tenemos
+    esa afirmacion: el consumidor debe leer 'desconocido', no 'cero'."""
+    casos = [
+        {},                       # 200 sin clave prices
+        {"prices": None},         # prices nulo
+        {"prices": {"1": {}}},    # prices no es lista
+        [],                       # cuerpo no es objeto
+    ]
+
+    for payload in casos:
+        monkeypatch.setattr(
+            app_module.requests, "get", lambda *a, **k: _Resp(payload=payload),
+        )
+        res = client.get("/api/pxq/item/MLA123")
+        assert res.status_code == 502, f"payload {payload!r} deberia ser 502"
+        assert json.loads(res.data) != []
+
+
+def test_get_pxq_200_no_json_es_502(client, monkeypatch):
+    monkeypatch.setattr(
+        app_module.requests, "get",
+        lambda *a, **k: _Resp(payload=None, content=b"<html>", text="<html>"),
+    )
+
+    res = client.get("/api/pxq/item/MLA123")
+
+    assert res.status_code == 502
+
+
+def test_get_pxq_cero_tramos_legitimo_sigue_siendo_200(client, monkeypatch):
+    """El 502 de forma inesperada no debe tapar el 'cero' verdadero."""
+    monkeypatch.setattr(
+        app_module.requests, "get", lambda *a, **k: _Resp(payload={"prices": []}),
+    )
+
+    res = client.get("/api/pxq/item/MLA123")
+
+    assert res.status_code == 200
+    assert json.loads(res.data) == []
 
 
 # -------------------- Escritura --------------------

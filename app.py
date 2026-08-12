@@ -3205,6 +3205,13 @@ PXQ_CONTEXT_RESTRICTIONS = ["channel_marketplace", "user_type_business"]
 # los tramos vivos. No sacar.
 PXQ_SHOW_ALL_PRICES_HEADER = {"show-all-prices": "true"}
 
+# Valores del campo 'pxq_write' que el POST agrega a las respuestas QUE GENERA
+# el proxy (ver el contrato completo en el docstring de api_pxq_item_post).
+# Las respuestas reenviadas de ML NO lo llevan: la ausencia del campo es la
+# senal de "no sabemos si se aplico".
+PXQ_WRITE_NOT_ATTEMPTED = "not_attempted"
+PXQ_WRITE_AMBIGUOUS = "ambiguous"
+
 
 def _ml_pxq_throttle():
     """Respeta el throttle global de ML."""
@@ -3383,33 +3390,77 @@ def api_pxq_item_post(item_id):
     primera escritura los borraria.
 
     FALLA CERRADO: si no se pueden leer los precios actuales no se escribe
-    (502, o 504 si fue timeout). Escribir sin saber que hay del otro lado es
-    borrar, y el borrado del precio estandar no se puede deshacer con un
-    reintento.
+    (502). Escribir sin saber que hay del otro lado es borrar, y el borrado
+    del precio estandar no se puede deshacer con un reintento.
 
     El status code de ML se preserva tal cual: un 5xx convertido en 2xx haria
-    que pricing-app registre una escritura que nunca ocurrio."""
+    que pricing-app registre una escritura que nunca ocurrio.
+
+    ---------------------------------------------------------------------
+    CONTRATO CON EL CONSUMIDOR: status code + campo 'pxq_write'
+    ---------------------------------------------------------------------
+    El status code SOLO es estructuralmente insuficiente para saber si la
+    escritura ocurrio: el status de ML se reenvia tal cual, asi que un 502
+    propio y un 502 de ML colisionan y ninguna tabla de codigos los separa.
+    Por eso el proxy agrega en el cuerpo el campo 'pxq_write':
+
+      "not_attempted" -> se sabe CON CERTEZA que no se escribio nada.
+      "ambiguous"     -> pudo haberse aplicado.
+
+    Solo lo llevan las respuestas que GENERA el proxy. La respuesta reenviada
+    de ML NO lo lleva a proposito: no sabemos si se aplico, y mutar el cuerpo
+    de ML puede romper al consumidor. La AUSENCIA del campo es la senal.
+
+    Regla que le queda al consumidor:
+      pxq_write == "not_attempted"  => no se escribio, reintentar es seguro.
+      cualquier otra cosa non-2xx   => ambiguo (campo "ambiguous" o campo
+                                       ausente), NO reintentar a ciegas.
+
+    Esa regla falla del lado seguro por defecto: si un gateway intermedio
+    reemplaza el cuerpo por una pagina de error, el campo desaparece y el
+    consumidor cae en "ambiguo", que es la clasificacion conservadora.
+
+    INVARIANTE: TODO fallo previo a la escritura devuelve 502, incluido el
+    TIMEOUT de la lectura previa.
+
+    Ese timeout devolvia 504 y se cambio a proposito. HTTP puro pide 504 para
+    un timeout de upstream, y se sacrifica esa pureza a cambio del invariante:
+    asi 504 significa SIEMPRE "ambiguo" -tanto el nuestro por timeout del POST
+    como el que pueda reenviar ML-. Antes 504 tenia dos significados opuestos
+    ("no se escribio" y "quizas se escribio") y el consumidor no podia
+    distinguirlos. NO revertir este caso a 504 por prolijidad HTTP: rompe el
+    invariante y devuelve la ambiguedad que este cambio elimino."""
     try:
         body = request.get_json(silent=True)
         if not isinstance(body, dict) or not isinstance(body.get("prices"), list):
-            return jsonify({"error": "Body JSON requerido: {\"prices\": [...]}"}), 400
+            # Validacion local: ni siquiera se toco la red. Certeza total.
+            return jsonify({
+                "error": "Body JSON requerido: {\"prices\": [...]}",
+                "pxq_write": PXQ_WRITE_NOT_ATTEMPTED,
+            }), 400
         prices, errors = _pxq_to_ml_prices(body["prices"])
         if errors:
-            return jsonify({"error": "Payload PxQ invalido", "detalle": errors}), 400
+            return jsonify({
+                "error": "Payload PxQ invalido",
+                "detalle": errors,
+                "pxq_write": PXQ_WRITE_NOT_ATTEMPTED,
+            }), 400
 
         tramos_cliente = len(prices)
         preservados, lectura_timeout = _pxq_preserved_nodes(item_id)
         if preservados is None:
+            # Fallo PREVIO a la escritura, por cualquier causa (status de ML o
+            # timeout): el POST todavia no salio, asi que la certeza es total.
+            # Ambos casos comparten el 502 por el invariante "504 => ambiguo"
+            # documentado arriba; el motivo real va en el mensaje.
             if lectura_timeout:
                 print(f"⏱️ PXQ WRITE abortado item={item_id}: timeout leyendo precios actuales")
-                return jsonify({
-                    "error": "timeout leyendo los precios actuales en ML; no se escribio",
-                }), 504
-            print(f"❌ PXQ WRITE abortado item={item_id}: no se pudieron leer los precios actuales")
-            return jsonify({
-                "error": "no se pudieron leer los precios actuales en ML; "
-                         "no se escribio para no borrar el precio estandar ni las promociones",
-            }), 502
+                motivo = "timeout leyendo los precios actuales en ML; no se escribio"
+            else:
+                print(f"❌ PXQ WRITE abortado item={item_id}: no se pudieron leer los precios actuales")
+                motivo = ("no se pudieron leer los precios actuales en ML; "
+                          "no se escribio para no borrar el precio estandar ni las promociones")
+            return jsonify({"error": motivo, "pxq_write": PXQ_WRITE_NOT_ATTEMPTED}), 502
 
         # Los ids de ML llegan indistintamente como int o str: comparar como str.
         ya_enviados = {str(p["id"]) for p in prices if p.get("id") is not None}
@@ -3431,13 +3482,23 @@ def api_pxq_item_post(item_id):
             timeout=PXQ_WRITE_TIMEOUT,
         )
         print(f"📝 PXQ WRITE item={item_id} -> {res.status_code}")
+        # PASSTHROUGH PURO: aca NO se agrega 'pxq_write'. No sabemos si ML
+        # aplico la escritura, y mutar el cuerpo de ML puede romper al
+        # consumidor. La ausencia del campo ya significa "ambiguo". No agregar.
         return jsonify(_ml_pxq_payload(res)), res.status_code
     except requests.Timeout:
         print(f"⏱️ PXQ WRITE timeout item={item_id} (ambiguo: pudo haberse aplicado)")
-        return jsonify({"error": "timeout escribiendo precios en ML (ambiguo)"}), 504
+        return jsonify({
+            "error": "timeout escribiendo precios en ML (ambiguo)",
+            "pxq_write": PXQ_WRITE_AMBIGUOUS,
+        }), 504
     except Exception as e:
+        # AMBIGUO A PROPOSITO, no es un descuido: este except cubre todo el
+        # handler y puede dispararse ANTES o DESPUES del POST a ML. Sin poder
+        # distinguirlo se falla del lado seguro; marcarlo "not_attempted"
+        # invitaria al consumidor a reintentar una escritura ya aplicada.
         print("❌ Error en POST /api/pxq/item:", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "pxq_write": PXQ_WRITE_AMBIGUOUS}), 500
 
 
 @app.route("/debug/promos")

@@ -348,10 +348,17 @@ def test_post_pxq_lectura_previa_fallida_es_502_y_no_escribe(client, monkeypatch
     ]})
 
     assert res.status_code == 502
+    assert json.loads(res.data)["pxq_write"] == "not_attempted"
     assert escrituras["n"] == 0, "no debe escribirse a ML si la lectura previa fallo"
 
 
-def test_post_pxq_lectura_previa_con_timeout_es_504_y_no_escribe(client, monkeypatch):
+def test_post_pxq_lectura_previa_con_timeout_es_502_ya_no_504_y_no_escribe(client, monkeypatch):
+    """CAMBIO DE CONTRATO DELIBERADO: este caso devolvia 504 y ahora devuelve
+    502. HTTP puro pediria 504 para un timeout de upstream, pero el 504 tenia
+    dos significados opuestos ('no se escribio' aca, 'quizas se escribio' en el
+    timeout del POST) y el consumidor no podia distinguirlos. Se sacrifica la
+    pureza HTTP a cambio del invariante: 504 significa SIEMPRE ambiguo.
+    Si este test vuelve a esperar 504, el invariante se rompio."""
     escrituras = {"n": 0}
 
     def fake_request(*a, **k):
@@ -368,8 +375,9 @@ def test_post_pxq_lectura_previa_con_timeout_es_504_y_no_escribe(client, monkeyp
         {"quantity": 10, "amount": 2850},
     ]})
 
-    assert res.status_code == 504
-    assert escrituras["n"] == 0
+    assert res.status_code == 502, "el timeout de lectura previa ya no es 504"
+    assert json.loads(res.data)["pxq_write"] == "not_attempted"
+    assert escrituras["n"] == 0, "el POST a ML no debe llamarse"
 
 
 def test_post_pxq_tramos_nuevos_conservan_context_restrictions(client, monkeypatch):
@@ -427,3 +435,165 @@ def test_post_pxq_sin_nodos_ajenos_no_cambia_el_payload(client, monkeypatch):
             },
         },
     ]}
+
+
+# -------------------- Escritura: contrato del campo pxq_write --------------------
+
+# El status code solo no alcanza: el status de ML se reenvia tal cual, asi que
+# un 502 nuestro y un 502 de ML colisionan. El campo 'pxq_write' desambigua.
+# Los valores se escriben como literales A PROPOSITO y no via las constantes de
+# app.py: lo que se testea es el contrato de cable con pricing-app, no que el
+# modulo sea consistente consigo mismo.
+
+BODY_PXQ_VALIDO = {"prices": [{"quantity": 10, "amount": 2850}]}
+
+
+def _resp_ml_ok(*a, **k):
+    return _Resp(payload={})
+
+
+def _lanza_timeout(*a, **k):
+    raise app_module.requests.Timeout("timeout")
+
+
+def _lanza_error_generico(*a, **k):
+    raise RuntimeError("boom inesperado")
+
+
+# Escenarios que terminan en una respuesta GENERADA por el proxy (no reenviada
+# de ML). Cada uno se deja autocontenido -mockea lectura y escritura- para que
+# pueda ejecutarse en cualquier orden.
+
+def _esc_body_sin_prices(client, monkeypatch):
+    _patch_pxq_read(monkeypatch)
+    monkeypatch.setattr(app_module.requests, "request", _resp_ml_ok)
+    return client.post("/api/pxq/item/MLA123", json={})
+
+
+def _esc_prices_mal_formado(client, monkeypatch):
+    _patch_pxq_read(monkeypatch)
+    monkeypatch.setattr(app_module.requests, "request", _resp_ml_ok)
+    return client.post("/api/pxq/item/MLA123", json={"prices": [{"amount": 100}]})
+
+
+def _esc_lectura_previa_fallida(client, monkeypatch):
+    _patch_pxq_read(monkeypatch, status_code=500)
+    monkeypatch.setattr(app_module.requests, "request", _resp_ml_ok)
+    return client.post("/api/pxq/item/MLA123", json=BODY_PXQ_VALIDO)
+
+
+def _esc_lectura_previa_timeout(client, monkeypatch):
+    monkeypatch.setattr(app_module.requests, "get", _lanza_timeout)
+    monkeypatch.setattr(app_module.requests, "request", _resp_ml_ok)
+    return client.post("/api/pxq/item/MLA123", json=BODY_PXQ_VALIDO)
+
+
+def _esc_timeout_del_post(client, monkeypatch):
+    _patch_pxq_read(monkeypatch)
+    monkeypatch.setattr(app_module.requests, "request", _lanza_timeout)
+    return client.post("/api/pxq/item/MLA123", json=BODY_PXQ_VALIDO)
+
+
+def _esc_excepcion_generica(client, monkeypatch):
+    _patch_pxq_read(monkeypatch)
+    monkeypatch.setattr(app_module.requests, "request", _lanza_error_generico)
+    return client.post("/api/pxq/item/MLA123", json=BODY_PXQ_VALIDO)
+
+
+# (nombre, escenario, status esperado, pxq_write esperado)
+RESPUESTAS_GENERADAS_POR_EL_PROXY = [
+    ("400 body sin prices", _esc_body_sin_prices, 400, "not_attempted"),
+    ("400 prices mal formado", _esc_prices_mal_formado, 400, "not_attempted"),
+    ("502 lectura previa fallida", _esc_lectura_previa_fallida, 502, "not_attempted"),
+    ("502 lectura previa timeout", _esc_lectura_previa_timeout, 502, "not_attempted"),
+    ("504 timeout del POST", _esc_timeout_del_post, 504, "ambiguous"),
+    ("500 excepcion generica", _esc_excepcion_generica, 500, "ambiguous"),
+]
+
+_IDS_ESCENARIOS = [nombre for nombre, _, _, _ in RESPUESTAS_GENERADAS_POR_EL_PROXY]
+
+
+@pytest.mark.parametrize(
+    "escenario,status_esperado,pxq_write_esperado",
+    [(e, s, p) for _, e, s, p in RESPUESTAS_GENERADAS_POR_EL_PROXY],
+    ids=_IDS_ESCENARIOS,
+)
+def test_pxq_write_de_cada_respuesta_generada_por_el_proxy(
+    client, monkeypatch, escenario, status_esperado, pxq_write_esperado,
+):
+    """Tabla completa del contrato. Toda respuesta que genera el proxy declara
+    si la escritura se intento o no; ninguna se queda sin declarar."""
+    res = escenario(client, monkeypatch)
+
+    assert res.status_code == status_esperado
+    assert json.loads(res.data)["pxq_write"] == pxq_write_esperado
+
+
+@pytest.mark.parametrize(
+    "escenario",
+    [e for _, e, _, _ in RESPUESTAS_GENERADAS_POR_EL_PROXY],
+    ids=_IDS_ESCENARIOS,
+)
+def test_invariante_ningun_504_del_proxy_dice_not_attempted(client, monkeypatch, escenario):
+    """INVARIANTE: 504 significa SIEMPRE 'ambiguo'.
+
+    Se aserta sobre el corpus entero en vez de caso por caso: cualquier 504
+    nuevo que se agregue al handler rompe aca en cuanto se sume su escenario a
+    RESPUESTAS_GENERADAS_POR_EL_PROXY. La cobertura llega hasta donde llega el
+    corpus -no hay forma de asertarlo sobre codigo no ejecutado-, por eso el
+    corpus tiene que crecer junto con el handler."""
+    res = escenario(client, monkeypatch)
+
+    if res.status_code == 504:
+        assert json.loads(res.data).get("pxq_write") != "not_attempted"
+
+
+def test_post_pxq_timeout_del_post_es_504_y_ambiguo(client, monkeypatch):
+    """El POST salio y no sabemos si ML lo aplico: reintentar a ciegas puede
+    duplicar la escritura."""
+    res = _esc_timeout_del_post(client, monkeypatch)
+
+    assert res.status_code == 504
+    assert json.loads(res.data)["pxq_write"] == "ambiguous"
+
+
+def test_post_pxq_excepcion_generica_es_500_y_ambiguo(client, monkeypatch):
+    """'ambiguous' A PROPOSITO: el except generico cubre todo el handler y
+    puede dispararse antes o despues del POST. Ante la duda, lado seguro."""
+    res = _esc_excepcion_generica(client, monkeypatch)
+
+    assert res.status_code == 500
+    assert json.loads(res.data)["pxq_write"] == "ambiguous"
+
+
+def test_post_pxq_los_dos_400_de_validacion_son_not_attempted(client, monkeypatch):
+    """Validacion local: ni se toco la red. Reintentar es seguro."""
+    for escenario in (_esc_body_sin_prices, _esc_prices_mal_formado):
+        res = escenario(client, monkeypatch)
+        assert res.status_code == 400
+        assert json.loads(res.data)["pxq_write"] == "not_attempted", escenario.__name__
+
+
+def test_post_pxq_passthrough_de_ml_no_lleva_pxq_write(client, monkeypatch):
+    """La respuesta reenviada de ML es PASSTHROUGH PURO: no sabemos si se
+    aplico y mutar el cuerpo puede romper al consumidor. La AUSENCIA del campo
+    es la senal de ambiguo. Vale para el 200 y tambien para el error de ML
+    -que es justo el caso que colisiona con nuestro propio 502-."""
+    casos = [
+        (200, {"prices": [{"id": "1", "amount": 2900}]}),
+        (502, {"error": "bad_gateway", "message": "upstream de ML caido"}),
+    ]
+
+    for status_ml, cuerpo_ml in casos:
+        monkeypatch.setattr(
+            app_module.requests, "request",
+            lambda *a, **k: _Resp(status_code=status_ml, payload=cuerpo_ml),
+        )
+        _patch_pxq_read(monkeypatch)
+
+        res = client.post("/api/pxq/item/MLA123", json={"prices": [{"id": "1"}]})
+        body = json.loads(res.data)
+
+        assert res.status_code == status_ml
+        assert "pxq_write" not in body, f"ML {status_ml}: el passthrough no debe mutarse"
+        assert body == cuerpo_ml, f"ML {status_ml}: el cuerpo debe ser exactamente el de ML"

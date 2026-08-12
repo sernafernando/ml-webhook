@@ -3251,6 +3251,61 @@ def _flatten_pxq_prices(data):
     return tramos
 
 
+def _pxq_preserved_nodes(item_id):
+    """Ids de los nodos de precio que NO son tramos PxQ: el precio estandar de
+    cada canal (marketplace, mshops) y las promociones vivas.
+
+    Existe porque el POST /prices/standard/quantity REEMPLAZA el array completo
+    y el GET de este proxy solo expone los tramos PxQ. El cliente nunca ve
+    estos ids, nunca los manda, y sin reinyectarlos aca la primera escritura
+    los borraria.
+
+    Devuelve (ids, timeout). ids es None ante CUALQUIER fallo: status != 200,
+    cuerpo sin 'prices' como lista, respuesta no-dict, timeout o excepcion.
+    Ese None NO es lo mismo que []: [] afirma "no hay nodos ajenos", y esa
+    afirmacion no la tenemos si la lectura fallo. El caller falla cerrado.
+    timeout separa el caso de red lenta para que el caller lo mapee a 504."""
+    try:
+        _ml_pxq_throttle()
+        res = requests.get(
+            f"https://api.mercadolibre.com/items/{item_id}/prices",
+            headers={
+                "Authorization": f"Bearer {get_token()}",
+                # Sin este header ML omite los nodos con min_purchase_unit y la
+                # deduplicacion contra los tramos del cliente queda ciega.
+                **PXQ_SHOW_ALL_PRICES_HEADER,
+            },
+            timeout=PXQ_READ_TIMEOUT,
+        )
+    except requests.Timeout:
+        print(f"⏱️ PXQ PRESERVE timeout item={item_id}")
+        return None, True
+    except Exception as e:
+        print(f"❌ PXQ PRESERVE error item={item_id}: {e}")
+        return None, False
+
+    if res.status_code != 200:
+        print(f"❌ PXQ PRESERVE item={item_id} -> {res.status_code}")
+        return None, False
+
+    data = _ml_pxq_payload(res)
+    if not isinstance(data, dict) or not isinstance(data.get("prices"), list):
+        print(f"❌ PXQ PRESERVE item={item_id} 200 con forma inesperada: {res.text[:300]}")
+        return None, False
+
+    ids = []
+    for entry in data["prices"]:
+        if not isinstance(entry, dict):
+            continue
+        conditions = entry.get("conditions") or {}
+        if conditions.get("min_purchase_unit") is not None:
+            continue
+        if entry.get("id") is None:
+            continue
+        ids.append(entry["id"])
+    return ids, False
+
+
 def _pxq_to_ml_prices(entries):
     """Traduce la forma simplificada del cliente a la forma nativa de ML.
       {"id": "2"}                      -> conservar el tramo tal cual
@@ -3318,8 +3373,20 @@ def api_pxq_item_get(item_id):
 @app.route("/api/pxq/item/<item_id>", methods=["POST"])
 def api_pxq_item_post(item_id):
     """Escribe los tramos PxQ. SINGLE-SHOT: no reintenta.
-    El POST de ML REEMPLAZA el array completo (no es PATCH): todo tramo que no
-    venga en el body se borra. Se manda exactamente lo recibido, traducido.
+    El POST de ML REEMPLAZA el array completo (no es PATCH): todo id que no
+    venga en el body se borra.
+
+    Se manda lo recibido y traducido MAS los ids de los nodos ajenos a PxQ
+    (precio estandar de cada canal y promociones vivas). Esa reinyeccion vive
+    de este lado a proposito: el GET expone solo los tramos PxQ, asi que el
+    cliente no puede conocer esos ids ni mandarlos, y sin agregarlos aca la
+    primera escritura los borraria.
+
+    FALLA CERRADO: si no se pueden leer los precios actuales no se escribe
+    (502, o 504 si fue timeout). Escribir sin saber que hay del otro lado es
+    borrar, y el borrado del precio estandar no se puede deshacer con un
+    reintento.
+
     El status code de ML se preserva tal cual: un 5xx convertido en 2xx haria
     que pricing-app registre una escritura que nunca ocurrio."""
     try:
@@ -3330,7 +3397,31 @@ def api_pxq_item_post(item_id):
         if errors:
             return jsonify({"error": "Payload PxQ invalido", "detalle": errors}), 400
 
-        print(f"📝 PXQ WRITE item={item_id} tramos={len(prices)}")
+        tramos_cliente = len(prices)
+        preservados, lectura_timeout = _pxq_preserved_nodes(item_id)
+        if preservados is None:
+            if lectura_timeout:
+                print(f"⏱️ PXQ WRITE abortado item={item_id}: timeout leyendo precios actuales")
+                return jsonify({
+                    "error": "timeout leyendo los precios actuales en ML; no se escribio",
+                }), 504
+            print(f"❌ PXQ WRITE abortado item={item_id}: no se pudieron leer los precios actuales")
+            return jsonify({
+                "error": "no se pudieron leer los precios actuales en ML; "
+                         "no se escribio para no borrar el precio estandar ni las promociones",
+            }), 502
+
+        # Los ids de ML llegan indistintamente como int o str: comparar como str.
+        ya_enviados = {str(p["id"]) for p in prices if p.get("id") is not None}
+        agregados = 0
+        for node_id in preservados:
+            if str(node_id) in ya_enviados:
+                continue
+            prices.append({"id": node_id})
+            ya_enviados.add(str(node_id))
+            agregados += 1
+
+        print(f"📝 PXQ WRITE item={item_id} tramos={tramos_cliente} preservados={agregados}")
         _ml_pxq_throttle()
         res = requests.request(
             "POST",

@@ -3,6 +3,8 @@ import os
 import requests
 import json
 import base64
+import hmac
+import hashlib
 from urllib.parse import urlsplit, urlunsplit
 from dotenv import load_dotenv
 from datetime import datetime
@@ -237,6 +239,89 @@ def build_ml_api_url(resource):
 def ml_resource_in_allowlist(resource):
     """True si el resource matchea un prefijo conocido y legitimo."""
     return isinstance(resource, str) and resource.startswith(ML_RESOURCE_ALLOWLIST)
+
+
+# ---- OAuth state firmado (stateless) ----
+
+# Ventana de validez del state. Un login normal tarda segundos; 10 minutos
+# cubren al usuario que se distrae sin dejar el state usable por horas.
+OAUTH_STATE_MAX_AGE_SECONDS = 600
+
+
+def _oauth_state_key():
+    return (ML_CLIENT_SECRET or "").encode("utf-8")
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def generate_oauth_state(now=None):
+    """Genera un state firmado con HMAC-SHA256 sobre ML_CLIENT_SECRET.
+
+    Formato: <payload_b64url>.<firma_b64url>, con payload '<timestamp>:<nonce>'.
+
+    Es stateless a proposito. Guardar el state en un dict en memoria o en la
+    session de Flask rompe el login cuando la app corre con varios workers: lo
+    genera un proceso y lo verifica otro, que no lo tiene. La falla aparece de
+    forma intermitente y es dificilisima de diagnosticar.
+    """
+    issued_at = int(now if now is not None else time.time())
+    nonce = _b64url_encode(os.urandom(9))
+    payload_b64 = _b64url_encode(f"{issued_at}:{nonce}".encode("utf-8"))
+    signature = hmac.new(
+        _oauth_state_key(), payload_b64.encode("ascii"), hashlib.sha256
+    ).digest()
+    return f"{payload_b64}.{_b64url_encode(signature)}"
+
+
+def verify_oauth_state(state, now=None):
+    """Verifica firma y frescura del state. Devuelve (True, None) o (False, motivo)."""
+    # Falla cerrado: sin secreto la firma la puede forjar cualquiera que conozca
+    # el esquema. Rechazar no cuesta nada porque el canje del code contra ML
+    # tampoco funciona sin client_secret.
+    if not ML_CLIENT_SECRET:
+        return False, "ML_CLIENT_SECRET no configurado"
+
+    if not state or not isinstance(state, str) or not state.isascii():
+        return False, "state ausente o con caracteres invalidos"
+
+    parts = state.split(".")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return False, "state con formato invalido"
+
+    payload_b64, signature_b64 = parts
+
+    expected = hmac.new(
+        _oauth_state_key(), payload_b64.encode("ascii"), hashlib.sha256
+    ).digest()
+    try:
+        received = _b64url_decode(signature_b64)
+    except Exception:
+        return False, "firma no decodificable"
+
+    # compare_digest y nunca '==': la comparacion normal corta en el primer byte
+    # distinto, y esa diferencia de tiempo deja adivinar la firma byte a byte.
+    if not hmac.compare_digest(expected, received):
+        return False, "firma invalida"
+
+    try:
+        issued_at = int(_b64url_decode(payload_b64).decode("utf-8").split(":", 1)[0])
+    except Exception:
+        return False, "payload invalido"
+
+    age = (now if now is not None else time.time()) - issued_at
+    if age > OAUTH_STATE_MAX_AGE_SECONDS:
+        return False, "state vencido"
+    # Tolerancia de clock skew entre workers; un state del futuro lejano no es normal.
+    if age < -60:
+        return False, "state con fecha futura"
+
+    return True, None
 
 
 def _clamp_limit(raw_limit):
@@ -1668,14 +1753,26 @@ def make_item_card(item_id, ml_url, ml_data=None):
 
 @app.route("/auth")
 def auth():
+    # El state va firmado con HMAC y lo verifica /callback. Sin esto, cualquiera
+    # puede mandar su propio ?code= y dejar la app operando contra su cuenta.
+    state = generate_oauth_state()
     auth_url = (
         f"https://auth.mercadolibre.com.ar/authorization?"
         f"response_type=code&client_id={ML_CLIENT_ID}&redirect_uri={ML_REDIRECT_URI}"
+        f"&state={state}"
     )
     return redirect(auth_url)
 
 @app.route("/callback")
 def callback():
+    # Se valida el state ANTES de canjear el code. Un code inyectado por un
+    # tercero sobrescribia ml_tokens fila id=1 y dejaba la app entera trabajando
+    # contra la cuenta del atacante.
+    state_ok, state_err = verify_oauth_state(request.args.get("state"))
+    if not state_ok:
+        print(f"⛔ CALLBACK STATE RECHAZADO motivo={state_err}")
+        return "Parámetro 'state' inválido o vencido", 400
+
     code = request.args.get("code")
     if not code:
         return "Falta el parámetro 'code'", 400
@@ -1691,7 +1788,16 @@ def callback():
 
     response = requests.post(token_url, data=payload)
     token_data = response.json()
-    print("🔑 Token recibido:", token_data)
+    # Antes se logueaba token_data entero: el access_token y el refresh_token
+    # completos quedaban en texto plano en los logs en cada refresh. Solo campos
+    # no sensibles.
+    print(
+        "🔑 Token recibido:",
+        {
+            "expires_in": token_data.get("expires_in"),
+            "user_id": token_data.get("user_id"),
+        },
+    )
 
     if "access_token" in token_data:
         save_token_to_db(token_data)

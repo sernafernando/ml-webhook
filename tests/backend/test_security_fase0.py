@@ -292,3 +292,142 @@ def test_fetch_and_store_preview_corta_antes_de_pedir_el_token(monkeypatch):
     monkeypatch.setattr(app_module, "get_token", _explota)
 
     assert app_module.fetch_and_store_preview("@atacante.tld/x") is None
+
+
+# =====================================================================
+# 5 y 6 — /callback y el state firmado
+# =====================================================================
+
+@pytest.fixture
+def callback_client(monkeypatch):
+    """Registra escrituras en ml_tokens en vez de hacerlas."""
+    saved = []
+    monkeypatch.setattr(app_module, "save_token_to_db", lambda token_data: saved.append(token_data))
+    app_module.app.config["TESTING"] = True
+    with app_module.app.test_client() as c:
+        yield c, saved
+
+
+def _state_con_firma_alterada():
+    state = app_module.generate_oauth_state()
+    payload_b64, firma = state.split(".")
+    # Cambiar un solo caracter de la firma alcanza.
+    alterada = ("B" if firma[0] != "B" else "C") + firma[1:]
+    return f"{payload_b64}.{alterada}"
+
+
+def _state_con_payload_alterado():
+    """Payload nuevo (timestamp fresco) pegado a una firma vieja y valida."""
+    state = app_module.generate_oauth_state()
+    _payload_viejo, firma = state.split(".")
+    nuevo = app_module._b64url_encode(f"{int(time.time())}:falsificado".encode("utf-8"))
+    return f"{nuevo}.{firma}"
+
+
+def test_callback_sin_state_rechaza_y_no_escribe_ml_tokens(callback_client, no_network):
+    c, saved = callback_client
+
+    res = c.get("/callback", query_string={"code": "CODE-DEL-ATACANTE"})
+
+    assert res.status_code == 400
+    assert saved == []
+    # Ni siquiera se canjea el code: el state se valida antes.
+    assert no_network == []
+
+
+@pytest.mark.parametrize("state_factory, caso", [
+    (lambda: "no-es-un-state", "formato invalido"),
+    (lambda: "", "vacio"),
+    (lambda: "abc.def.ghi", "demasiadas partes"),
+    (_state_con_firma_alterada, "firma alterada"),
+    (_state_con_payload_alterado, "payload alterado con firma vieja"),
+    (lambda: app_module.generate_oauth_state(now=time.time() - 601), "vencido"),
+])
+def test_callback_rechaza_state_invalido_y_no_escribe_ml_tokens(
+    callback_client, no_network, state_factory, caso
+):
+    c, saved = callback_client
+
+    res = c.get("/callback", query_string={"code": "CODE-DEL-ATACANTE", "state": state_factory()})
+
+    assert res.status_code == 400, caso
+    assert saved == [], caso
+    assert no_network == [], caso
+
+
+def test_callback_con_state_valido_sigue_el_flujo(callback_client, monkeypatch):
+    c, saved = callback_client
+
+    monkeypatch.setattr(
+        app_module.requests, "post",
+        lambda *a, **k: _Resp(payload={
+            "access_token": "APP_USR-nuevo",
+            "refresh_token": "TG-nuevo",
+            "expires_in": 21600,
+            "user_id": 123,
+        }),
+    )
+
+    res = c.get("/callback", query_string={"code": "CODE-LEGITIMO", "state": app_module.generate_oauth_state()})
+
+    assert res.status_code == 200
+    assert len(saved) == 1
+    assert saved[0]["access_token"] == "APP_USR-nuevo"
+
+
+def test_callback_no_loguea_el_access_token(callback_client, monkeypatch, capsys):
+    c, _saved = callback_client
+
+    monkeypatch.setattr(
+        app_module.requests, "post",
+        lambda *a, **k: _Resp(payload={
+            "access_token": "APP_USR-SECRETO-NO-DEBE-APARECER",
+            "refresh_token": "TG-SECRETO-NO-DEBE-APARECER",
+            "expires_in": 21600,
+            "user_id": 123,
+        }),
+    )
+
+    c.get("/callback", query_string={"code": "CODE", "state": app_module.generate_oauth_state()})
+
+    salida = capsys.readouterr().out
+    assert "APP_USR-SECRETO-NO-DEBE-APARECER" not in salida
+    assert "TG-SECRETO-NO-DEBE-APARECER" not in salida
+
+
+def test_auth_redirige_con_un_state_que_callback_acepta(client):
+    res = client.get("/auth")
+
+    assert res.status_code == 302
+    from urllib.parse import parse_qs, urlsplit
+
+    state = parse_qs(urlsplit(res.headers["Location"]).query)["state"][0]
+    ok, motivo = app_module.verify_oauth_state(state)
+    assert ok, motivo
+
+
+def test_state_es_stateless_no_depende_del_proceso_que_lo_genero():
+    """Si el state viviera en un dict en memoria o en la session de Flask, el
+    login se rompe de forma intermitente con varios workers: lo genera un
+    proceso y lo verifica otro. Verificar solo depende de ML_CLIENT_SECRET."""
+    state = app_module.generate_oauth_state()
+
+    ok, _ = app_module.verify_oauth_state(state)
+    assert ok
+
+    # Dos states seguidos son distintos (nonce), y los dos validan.
+    otro = app_module.generate_oauth_state()
+    assert otro != state
+    assert app_module.verify_oauth_state(otro)[0]
+
+
+def test_verify_oauth_state_falla_cerrado_sin_client_secret(monkeypatch):
+    """Sin secreto, la firma seria forjable por cualquiera que conozca el
+    esquema. Preferimos romper el login antes que aceptar un state sin firma
+    real: el canje contra ML tampoco funcionaria sin client_secret."""
+    monkeypatch.setattr(app_module, "ML_CLIENT_SECRET", "")
+
+    ok, motivo = app_module.verify_oauth_state(app_module.generate_oauth_state())
+
+    assert not ok
+    assert motivo

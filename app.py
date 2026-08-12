@@ -3,6 +3,7 @@ import os
 import requests
 import json
 import base64
+from urllib.parse import urlsplit, urlunsplit
 from dotenv import load_dotenv
 from datetime import datetime
 import time
@@ -142,6 +143,100 @@ def ml_api_get(url, headers=None, params=None, max_retries=3):
     # si agotamos retries, devolver la última respuesta (429)
     print(f"❌ Rate limit agotado tras {max_retries} intentos para {url}")
     return res
+
+
+# =============================================================
+# Fase 0 de seguridad — helpers compartidos
+# Ver docs/plan-autenticacion.md. Esto NO es autenticacion de
+# consumidores (eso es Fase 2): son los arreglos que no requieren
+# credenciales ni coordinar con nadie.
+# =============================================================
+
+ML_API_HOST = "api.mercadolibre.com"
+ML_API_BASE = f"https://{ML_API_HOST}"
+
+# Allowlist de prefijos de recurso que la app consume de verdad. Deducida
+# leyendo las llamadas reales a la API de ML en este archivo:
+#   /items/                   fetch_and_store_preview (rama ITEMS), render_ml_view,
+#                             price_to_win, /prices y /prices/standard/quantity (PxQ)
+#   /orders/                  fetch_and_store_preview (rama ORDERS)
+#   /shipments/               fetch_and_store_preview (rama SHIPMENTS)
+#   /post-purchase/v1/claims/ fetch_and_store_preview y render_ml_view (reclamos)
+#   /seller-promotions/       _process_promotion_webhook y rutas de promociones
+#   /users/                   datos del vendedor, items/search, shipping_options/free
+#   /products/                busqueda y detalle de catalogo
+#   /sites/                   busqueda por EAN dentro del sitio
+#
+# NO incluye /oauth/token a proposito: por ahi no se lee nada de negocio.
+ML_RESOURCE_ALLOWLIST = (
+    "/items/",
+    "/orders/",
+    "/shipments/",
+    "/post-purchase/v1/claims/",
+    "/seller-promotions/",
+    "/users/",
+    "/products/",
+    "/sites/",
+)
+
+
+def build_ml_api_url(resource):
+    """Construye la URL de la API de ML y valida el RESULTADO del parseo.
+
+    Devuelve (url, None) si el destino resuelto es exactamente api.mercadolibre.com,
+    o (None, motivo) si no lo es.
+
+    Se valida la URL YA CONSTRUIDA y no el string de entrada a proposito. Un
+    chequeo de prefijo sobre el input hay que acertarlo contra una lista de
+    trucos que no se termina nunca: '@atacante.tld/x' hace que el hostname real
+    sea atacante.tld, y '.atacante.tld/x' lo convierte en
+    api.mercadolibre.com.atacante.tld. En los dos casos el header
+    'Authorization: Bearer <token del vendedor>' sale hacia el atacante.
+    Mirar lo que urlsplit resolvio de verdad es la unica forma que no depende de
+    anticipar el ataque.
+
+    Se devuelve la URL RECONSTRUIDA desde el parseo, no la concatenacion cruda,
+    para que lo que se valido sea byte a byte lo que se manda. urlsplit descarta
+    tab y newline embebidos; si mandaramos el string original, el cliente HTTP
+    podria ver una URL distinta de la que validamos.
+    """
+    if not isinstance(resource, str) or not resource:
+        return None, "resource vacio"
+
+    # Los caracteres de control abren la puerta a que el parser y el cliente
+    # HTTP lean cosas distintas. No hay recurso legitimo que los tenga.
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in resource):
+        return None, "resource con caracteres de control"
+
+    # Defensa SECUNDARIA: ningun recurso legitimo deja de empezar con '/'.
+    if not resource.startswith("/"):
+        return None, "resource debe empezar con '/'"
+
+    url = f"{ML_API_BASE}{resource}"
+
+    # Defensa PRIMARIA: verificar el host que realmente resolvio el parser.
+    try:
+        parsed = urlsplit(url)
+    except ValueError as e:
+        return None, f"resource no parseable: {e}"
+
+    if parsed.scheme != "https":
+        return None, f"scheme resuelto invalido: {parsed.scheme!r}"
+
+    if parsed.hostname != ML_API_HOST:
+        return None, f"host resuelto invalido: {parsed.hostname!r}"
+
+    # hostname normaliza (baja a minuscula y saca userinfo/puerto). Comparar
+    # tambien el netloc crudo descarta credenciales embebidas y puertos raros.
+    if parsed.netloc != ML_API_HOST:
+        return None, f"netloc resuelto invalido: {parsed.netloc!r}"
+
+    return urlunsplit(parsed), None
+
+
+def ml_resource_in_allowlist(resource):
+    """True si el resource matchea un prefijo conocido y legitimo."""
+    return isinstance(resource, str) and resource.startswith(ML_RESOURCE_ALLOWLIST)
 
 
 def _clamp_limit(raw_limit):
@@ -615,6 +710,14 @@ def _store_cancelled_order(order_data: dict):
 
 def fetch_and_store_preview(resource: str):
     try:
+        # Segunda puerta a la misma exfiltracion: el resource llega crudo desde
+        # POST /webhook, que no valida nada. Se valida ANTES de pedir el token
+        # para que un resource hostil no llegue nunca a tener credencial cerca.
+        ml_url, motivo = build_ml_api_url(resource)
+        if ml_url is None:
+            print(f"⛔ PREVIEW RESOURCE RECHAZADO motivo={motivo} resource={resource!r}")
+            return
+
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
 
@@ -623,7 +726,7 @@ def fetch_and_store_preview(resource: str):
 
         # ----- SHIPMENTS -----
         if resource.startswith("/shipments/"):
-            res_ship = ml_api_get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            res_ship = ml_api_get(ml_url, headers=headers)
             ship_data = res_ship.json()
 
             # item principal del envío
@@ -773,7 +876,7 @@ def fetch_and_store_preview(resource: str):
 
         # ----- ITEMS COMUNES -----
         elif resource.startswith("/items/"):
-            res_item = ml_api_get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            res_item = ml_api_get(ml_url, headers=headers)
             item_data = res_item.json()
 
             brand_name = next(
@@ -959,7 +1062,7 @@ def fetch_and_store_preview(resource: str):
 
         # ----- ORDERS -----
         elif resource.startswith("/orders/"):
-            res_order = ml_api_get(f"https://api.mercadolibre.com{resource}", headers=headers)
+            res_order = ml_api_get(ml_url, headers=headers)
             order_data = res_order.json()
 
             order_id = order_data.get("id")
@@ -993,7 +1096,7 @@ def fetch_and_store_preview(resource: str):
         # ----- CUALQUIER OTRO TOPIC (no romper) -----
         else:
             try:
-                res_generic = ml_api_get(f"https://api.mercadolibre.com{resource}", headers=headers)
+                res_generic = ml_api_get(ml_url, headers=headers)
                 generic_data = res_generic.json()
                 preview["title"] = generic_data.get("title") or generic_data.get("name") or ""
                 preview["status"] = generic_data.get("status")
@@ -1917,9 +2020,28 @@ def render_meli_resource():
 
         if "/price_to_win" in resource:
             resource += ("&" if "?" in resource else "?") + "version=v2"
-        
+
+        # La validacion va DESPUES de agregar version=v2: si fuera antes, el
+        # append seria una via para inyectar sobre un resource ya aprobado.
+        ml_url, motivo = build_ml_api_url(resource)
+        if ml_url is None:
+            # Loguear el resource recibido: es la evidencia del intento.
+            print(f"⛔ RENDER RESOURCE RECHAZADO motivo={motivo} resource={resource!r}")
+            return "Parámetro 'resource' inválido", 400
+
+        # MODO OBSERVACION — no bloquea todavia.
+        # Aparte de la exfiltracion del token, esta ruta es un proxy de lectura
+        # arbitraria hacia la API de ML: encadenando /api/webhooks con esta se
+        # llega a ordenes, envios y datos personales de compradores. Bloquear de
+        # una podria romper consumidores que todavia no tenemos inventariados
+        # (Fase 1 del plan). Por ahora solo se registra.
+        # ACTIVAR EL BLOQUEO cuando este log deje de mostrar recursos legitimos:
+        # cambiar este print por un return 403.
+        if not ml_resource_in_allowlist(resource):
+            print(f"⚠️ RENDER FUERA DE ALLOWLIST resource={resource!r}")
+
         res = ml_api_get(
-            f"https://api.mercadolibre.com{resource}",
+            ml_url,
             headers={"Authorization": f"Bearer {token}"}
         )
 

@@ -431,3 +431,44 @@ def test_verify_oauth_state_falla_cerrado_sin_client_secret(monkeypatch):
 
     assert not ok
     assert motivo
+
+
+# =====================================================================
+# 4 — sweep: el thread arranca DENTRO del lock
+# =====================================================================
+
+def test_sweep_arranca_el_thread_dentro_del_lock(client, monkeypatch):
+    """Con el t.start() afuera del lock, el guard de 'ya esta corriendo' no
+    serializaba nada: dos requests concurrentes pasaban el chequeo."""
+    observado = {}
+
+    class _FakeThread:
+        def __init__(self, target=None, args=(), daemon=None):
+            observado["lock_al_crear"] = app_module._sweep_lock.locked()
+
+        def start(self):
+            observado["lock_al_arrancar"] = app_module._sweep_lock.locked()
+
+    monkeypatch.setattr(app_module.threading, "Thread", _FakeThread)
+    monkeypatch.setitem(app_module._sweep_state, "running", False)
+
+    res = client.get("/admin/sweep-shipping-costs")
+
+    assert res.status_code == 202
+    assert observado["lock_al_crear"] is True
+    assert observado["lock_al_arrancar"] is True
+
+    # Dejar el estado limpio para no contaminar otros tests.
+    app_module._sweep_state["running"] = False
+
+
+def test_sweep_status_no_dispara_el_job(client, monkeypatch):
+    def _explota(*a, **k):
+        raise AssertionError("?status=1 es solo lectura, no debe arrancar nada")
+
+    monkeypatch.setattr(app_module.threading, "Thread", _explota)
+
+    res = client.get("/admin/sweep-shipping-costs", query_string={"status": "1"})
+
+    assert res.status_code == 200
+    assert "running" in res.get_json()

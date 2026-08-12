@@ -3881,6 +3881,18 @@ def debug_seller_shipping_cost():
 
 
 # Operational: trigger or inspect the seller shipping-cost sweep job.
+#
+# PENDIENTE DE COORDINACION — NO aplicado todavia (Fase 0 del plan):
+#   - pasar el disparo a POST
+#   - eliminar el parametro ?force=1
+# Los dos cambios estan frenados porque hay un llamador real por GET:
+# sweep_shipping_costs.py (http_get sobre /admin/sweep-shipping-costs, y
+# --force -> ?force=1). Es el script cron-friendly del repo. Cambiar el metodo
+# ahora lo rompe en silencio: urlopen recibiria 405 y el cron fallaria sin que
+# nadie lo mire. Hay que migrar el script y el cron en el mismo movimiento.
+#
+# Mientras tanto sigue expuesto el DoS: un prefetch, un crawler o un preview de
+# link dispara el sweep con un GET.
 @app.route("/admin/sweep-shipping-costs")
 def admin_sweep_shipping_costs():
     # status-only mode: ?status=1
@@ -3916,12 +3928,17 @@ def admin_sweep_shipping_costs():
             "min_age_hours": min_age_hours,
         })
 
-    t = threading.Thread(
-        target=_sweep_seller_shipping_costs,
-        args=(limit, dry_run, min_age_hours),
-        daemon=True,
-    )
-    t.start()
+        # El thread se crea y arranca DENTRO del lock. Cuando estaba afuera, el
+        # guard de "ya esta corriendo" no serializaba nada: dos requests
+        # concurrentes pasaban el chequeo, la segunda pisaba _sweep_state y
+        # arrancaban dos sweeps sobre el mismo vendedor.
+        # _sweep_seller_shipping_costs no toma _sweep_lock, asi que no hay deadlock.
+        t = threading.Thread(
+            target=_sweep_seller_shipping_costs,
+            args=(limit, dry_run, min_age_hours),
+            daemon=True,
+        )
+        t.start()
 
     return jsonify({
         "status": "started",

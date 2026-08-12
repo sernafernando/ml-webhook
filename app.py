@@ -2155,29 +2155,37 @@ def index():
 def assets(path):
     return send_from_directory("frontend/dist", path)
 
-@app.route("/debug/dbinfo")
-def debug_dbinfo():
-    try:
-        with db_cursor() as cur:
-            cur.execute("SELECT current_database(), current_user, inet_server_addr(), inet_server_port();")
-            db, user, host, port = cur.fetchone()
-
-            cur.execute("""
-                SELECT COUNT(*)
-                FROM webhooks
-                WHERE resource LIKE '/items/MLA2243355590%%'
-            """)
-            count = cur.fetchone()[0]
-
-        return jsonify({
-            "db": db,
-            "user": user,
-            "host": str(host),
-            "port": port,
-            "webhooks_for_item": count
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# DESACTIVADA POR FILTRACION DE INFRAESTRUCTURA. No borrar: sirve para debug local.
+#
+# Devolvia nombre de base, usuario, host y puerto de Postgres sin autenticacion
+# sobre un dominio publico. No entrega credenciales, pero le regala a un atacante
+# el mapa de la infraestructura y confirma que el host es alcanzable.
+#
+# Descomentar SOLO en local y volver a comentar antes de deployar.
+#
+# @app.route("/debug/dbinfo")
+# def debug_dbinfo():
+#     try:
+#         with db_cursor() as cur:
+#             cur.execute("SELECT current_database(), current_user, inet_server_addr(), inet_server_port();")
+#             db, user, host, port = cur.fetchone()
+#
+#             cur.execute("""
+#                 SELECT COUNT(*)
+#                 FROM webhooks
+#                 WHERE resource LIKE '/items/MLA2243355590%%'
+#             """)
+#             count = cur.fetchone()[0]
+#
+#         return jsonify({
+#             "db": db,
+#             "user": user,
+#             "host": str(host),
+#             "port": port,
+#             "webhooks_for_item": count
+#         })
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
 
 # Headers tipo navegador
 BROWSER_HEADERS = {
@@ -2770,17 +2778,29 @@ def get_seller():
     except Exception as e:
         return f"❌ Error: {e}", 500
 
-@app.route("/debug/token")
-def debug_token():
-    try:
-        token = get_token()
-        return jsonify({
-            "access_token": token,
-            "expires_at": EXPIRATION,
-            "expires_in_seconds": int(EXPIRATION - time.time())
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# DESACTIVADA POR EXPOSICION DE CREDENCIAL. No borrar: sirve para debug local.
+#
+# Esta ruta devolvia el access_token de ML en texto plano, sin autenticacion,
+# sobre un dominio publico. Cualquiera con la URL podia sacar el token y operar
+# la cuenta del vendedor: escribir precios, editar publicaciones, crear envios.
+# Se verifico desde una maquina externa sin credenciales: devolvia el token.
+#
+# Si hace falta para debuggear, descomentarla SOLO en local y volver a
+# comentarla antes de deployar. Si alguna vez se necesita en produccion, no
+# alcanza con descomentar: hay que ponerle autenticacion y no devolver el token
+# entero.
+#
+# @app.route("/debug/token")
+# def debug_token():
+#     try:
+#         token = get_token()
+#         return jsonify({
+#             "access_token": token,
+#             "expires_at": EXPIRATION,
+#             "expires_in_seconds": int(EXPIRATION - time.time())
+#         })
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
 
 
 # -------------------------------------------------------------

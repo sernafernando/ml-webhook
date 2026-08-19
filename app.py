@@ -3803,6 +3803,167 @@ def debug_promos():
         return jsonify({"error": str(e)}), 500
 
 
+# =============================================================
+# PxQ shipping cost — costo del bulto de N unidades
+# =============================================================
+# Contrato con pricing-app:
+#   GET /api/shipping/seller-cost?item_id=<MLA>&quantity=<N>&tier_price=<precio_unitario>
+#   200 -> {"amount": <numero>} = costo TOTAL del bulto de N unidades que
+#   absorbe el vendedor. Cualquier otra cosa es un fallo y el cliente muestra
+#   "envio no disponible".
+#
+# REGLA DURA: nunca devolver 0 (ni ningun numero) como sustituto de un fallo.
+# 0 es un costo valido; fabricarlo inventaria un markup. Se falla con status.
+#
+# Por que dos llamadas a ML:
+#   1) forma por item_id: ML calcula el peso facturable UNITARIO. Ya factura
+#      por max(peso real, volumetrico = volumen_cm3 / 4000); no lo recalculamos
+#      nosotros, se lo preguntamos.
+#   2) forma por dimensions: peso facturable * N, para el bulto apilado.
+#
+# Por que no se multiplica el costo unitario por N: el peso escala lineal, el
+# COSTO no. Medido en gold_special: 1u=9860, 2u=11830, 5u=17830, 10u=33570.
+# Lineal habria dado 98600 en 10u. Hay que preguntarle a ML por cada N.
+SHIPPING_COST_TIMEOUT = 10
+
+# dimensions=10x10x10 es A PROPOSITO: una caja chica hace que mande el peso
+# que pasamos y no el volumetrico de una caja inventada. Con 30x30x30 el
+# billable salta de 3230 a 6750 y el costo sale inflado.
+SHIPPING_COST_PROBE_BOX = "10x10x10"
+
+
+def _shipping_free_options(seller_id, params):
+    """GET /users/{seller_id}/shipping_options/free. Devuelve (body, error).
+
+    error es (payload, status) listo para jsonify, o None si salio bien."""
+    url, reason = build_ml_api_url(f"/users/{seller_id}/shipping_options/free")
+    if url is None:
+        return None, ({"error": f"URL de ML invalida: {reason}"}, 500)
+    try:
+        _ml_pxq_throttle()
+        res = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {get_token()}"},
+            params=params,
+            timeout=SHIPPING_COST_TIMEOUT,
+        )
+    except requests.Timeout:
+        return None, ({"error": "timeout consultando el costo de envio a ML"}, 504)
+    except Exception as e:
+        return None, ({"error": f"error consultando el costo de envio a ML: {e}"}, 502)
+
+    if res.status_code != 200:
+        return None, ({"error": "ML rechazo la consulta de costo de envio",
+                       "ml_status": res.status_code}, 502)
+    try:
+        body = res.json()
+    except Exception:
+        return None, ({"error": "respuesta no-JSON de ML"}, 502)
+    if not isinstance(body, dict):
+        return None, ({"error": "respuesta de ML con forma inesperada"}, 502)
+    return body, None
+
+
+@app.route("/api/shipping/seller-cost", methods=["GET"])
+def api_shipping_seller_cost():
+    item_id = (request.args.get("item_id") or "").strip().upper()
+    if not item_id.startswith("MLA") or not item_id[3:].isdigit():
+        return jsonify({"error": "item_id debe ser un MLA valido"}), 400
+
+    try:
+        quantity = int(request.args.get("quantity", ""))
+    except ValueError:
+        return jsonify({"error": "quantity debe ser un entero"}), 400
+    if quantity < 1:
+        return jsonify({"error": "quantity debe ser >= 1"}), 400
+
+    try:
+        tier_price = float(request.args.get("tier_price", ""))
+    except ValueError:
+        return jsonify({"error": "tier_price debe ser un numero"}), 400
+    # Sin item_price ML devuelve list_cost: 0. Un precio <= 0 nos dejaria
+    # entregando ese 0 como si fuera un costo real.
+    if not tier_price > 0:
+        return jsonify({"error": "tier_price debe ser > 0"}), 400
+
+    # --- item: seller_id y listing_type_id ---
+    # Sin listing_type_id ML no aplica el descuento del vendedor.
+    item_url, reason = build_ml_api_url(f"/items/{item_id}")
+    if item_url is None:
+        return jsonify({"error": f"item_id invalido: {reason}"}), 400
+    try:
+        _ml_pxq_throttle()
+        item_res = requests.get(
+            item_url,
+            headers={"Authorization": f"Bearer {get_token()}"},
+            params={"attributes": "id,seller_id,listing_type_id"},
+            timeout=SHIPPING_COST_TIMEOUT,
+        )
+    except requests.Timeout:
+        return jsonify({"error": "timeout leyendo la publicacion en ML"}), 504
+    except Exception as e:
+        return jsonify({"error": f"error leyendo la publicacion en ML: {e}"}), 502
+    if item_res.status_code != 200:
+        return jsonify({"error": "ML rechazo la lectura de la publicacion",
+                        "ml_status": item_res.status_code}), 502
+    try:
+        item = item_res.json()
+    except Exception:
+        return jsonify({"error": "respuesta no-JSON de ML al leer la publicacion"}), 502
+
+    seller_id = (item or {}).get("seller_id")
+    listing_type_id = (item or {}).get("listing_type_id")
+    if seller_id is None or not listing_type_id:
+        return jsonify({"error": "la publicacion no expone seller_id/listing_type_id"}), 502
+
+    # --- 1) peso facturable UNITARIO, calculado por ML ---
+    unit_body, err = _shipping_free_options(seller_id, {"item_id": item_id, "verbose": "true"})
+    if err:
+        payload, status = err
+        return jsonify(payload), status
+    unit_cov = ((unit_body or {}).get("coverage") or {}).get("all_country") or {}
+    unit_billable = unit_cov.get("billable_weight")
+    if not isinstance(unit_billable, (int, float)) or unit_billable <= 0:
+        return jsonify({"error": "ML no devolvio billable_weight para la publicacion"}), 502
+
+    # --- 2) costo del bulto de N unidades ---
+    # El peso facturable SI escala lineal al apilar.
+    bulk_weight = int(round(unit_billable * quantity))
+    bulk_body, err = _shipping_free_options(seller_id, {
+        "dimensions": f"{SHIPPING_COST_PROBE_BOX},{bulk_weight}",
+        "item_price": tier_price,
+        "listing_type_id": listing_type_id,
+        "mode": "me2",
+        "condition": "new",
+    })
+    if err:
+        payload, status = err
+        return jsonify(payload), status
+
+    cov = ((bulk_body or {}).get("coverage") or {}).get("all_country") or {}
+    # list_cost YA viene con el descuento aplicado; discount.promoted_amount es
+    # el precio previo. Volver a aplicar el rate sobre list_cost lo parte al medio.
+    list_cost = cov.get("list_cost")
+    if not isinstance(list_cost, (int, float)) or isinstance(list_cost, bool):
+        return jsonify({"error": "ML no devolvio list_cost para el bulto"}), 502
+
+    print(f"📦 SHIPPING COST item={item_id} q={quantity} tier={tier_price} "
+          f"billable={bulk_weight}g -> {list_cost}")
+
+    response = jsonify({
+        "amount": list_cost,
+        "item_id": item_id,
+        "quantity": quantity,
+        "tier_price": tier_price,
+        "currency_id": cov.get("currency_id"),
+        "unit_billable_weight": unit_billable,
+        "billable_weight": bulk_weight,
+        "listing_type_id": listing_type_id,
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response, 200
+
+
 # TEMPORARY — empirical probe for /users/{user_id}/shipping_options/free
 # Remove once seller_shipping_costs schema is finalized.
 @app.route("/debug/seller-shipping-cost")

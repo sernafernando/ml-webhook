@@ -4110,6 +4110,288 @@ def admin_sweep_shipping_costs():
     }), 202
 
 
+# =============================================================
+# Barrido de tramos PxQ de todo el catalogo
+# =============================================================
+# Por que existe: pricing-app filtra la LISTA de productos por "tiene precios
+# mayoristas". Hasta ahora los tramos solo se persistian cuando un humano
+# entraba a un producto, asi que el filtro veia una fraccion del catalogo.
+#
+# Clonado de /admin/sweep-shipping-costs a proposito: mismos parametros
+# (?status, ?force, ?dry_run, ?limit, ?min_age_hours), mismo estado en memoria,
+# misma conexion dedicada, mismos flushes por lote.
+#
+# NO toca la escritura de precios PxQ: este barrido es solo lectura contra ML.
+PXQ_SWEEP_BATCH = 50
+
+_pxq_sweep_state = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "processed": 0,
+    "skipped": 0,
+    "errors": 0,
+    "with_tiers": 0,
+    "total_enumerated": 0,
+    "last_mla": None,
+    "dry_run": False,
+    "limit": None,
+    "min_age_hours": 0,
+}
+_pxq_sweep_lock = threading.Lock()
+
+
+def _enumerate_active_mlas(seller_id, headers, limit, log):
+    """MLAs activos del vendedor via search_type=scan (aguanta >1000 items).
+    Devuelve None si ML corta la enumeracion: None no es lo mismo que [], y []
+    haria que el caller crea que el catalogo esta vacio."""
+    all_mlas = []
+    scroll_id = None
+    url = f"https://api.mercadolibre.com/users/{seller_id}/items/search"
+    while True:
+        params = {"status": "active", "search_type": "scan", "limit": 100}
+        if scroll_id:
+            params["scroll_id"] = scroll_id
+        res = ml_api_get(url, headers=headers, params=params)
+        if res.status_code != 200:
+            log(f"❌ pxq sweep: enumeracion status={res.status_code}, abort")
+            return None
+        data_page = res.json()
+        page = data_page.get("results") or []
+        for entry in page:
+            mla = entry if isinstance(entry, str) else (entry or {}).get("id")
+            if mla:
+                all_mlas.append(mla)
+        scroll_id = data_page.get("scroll_id")
+        if not page or not scroll_id:
+            break
+        if limit and len(all_mlas) >= limit:
+            all_mlas = all_mlas[:limit]
+            break
+    return all_mlas
+
+
+def _pxq_tiers_for_item(item_id):
+    """Tramos PxQ vivos de una publicacion, con su currency_id.
+
+    Devuelve (tramos, error). tramos es None ante CUALQUIER fallo de lectura o
+    forma inesperada: None NO es [], y [] afirma "esta publicacion no tiene
+    tramos". Escribir esa afirmacion sin haberla leido borraria tramos reales."""
+    try:
+        _ml_pxq_throttle()
+        res = requests.get(
+            f"https://api.mercadolibre.com/items/{item_id}/prices",
+            headers={
+                "Authorization": f"Bearer {get_token()}",
+                # Sin este header ML omite los nodos con min_purchase_unit, o sea
+                # justo los tramos que venimos a buscar.
+                **PXQ_SHOW_ALL_PRICES_HEADER,
+            },
+            timeout=PXQ_READ_TIMEOUT,
+        )
+    except requests.Timeout:
+        return None, "timeout"
+    except Exception as e:
+        return None, str(e)
+
+    if res.status_code != 200:
+        return None, f"status={res.status_code}"
+
+    data = _ml_pxq_payload(res)
+    tramos = _flatten_pxq_prices(data)
+    if tramos is None:
+        return None, "forma inesperada"
+
+    currency_by_id = {}
+    for entry in (data.get("prices") or []):
+        if isinstance(entry, dict):
+            currency_by_id[entry.get("id")] = entry.get("currency_id")
+    for t in tramos:
+        t["currency_id"] = currency_by_id.get(t["id"])
+    return tramos, None
+
+
+def _flush_pxq_batch(conn, batch, log):
+    """Reemplaza los tramos de las MLAs del lote y registra el scan.
+    Devuelve True si commiteo."""
+    if not batch:
+        return True
+    mlas = [mla for mla, _ in batch]
+    rows = [
+        (mla, t["quantity"], t["amount"], t.get("currency_id"), t.get("id"))
+        for mla, tiers in batch for t in tiers
+    ]
+    scans = [(mla, len(tiers)) for mla, tiers in batch]
+    try:
+        with conn.cursor() as cur:
+            # DELETE + INSERT y no UPSERT: un tramo que ML ya no tiene debe
+            # desaparecer, y un UPSERT lo dejaria vivo para siempre.
+            cur.execute("DELETE FROM ml_pxq_price_tiers WHERE mla = ANY(%s)", (mlas,))
+            if rows:
+                execute_values(cur, """
+                    INSERT INTO ml_pxq_price_tiers
+                        (mla, quantity, amount, currency_id, price_id, updated_at)
+                    VALUES %s
+                """, [(r[0], r[1], r[2], r[3], r[4], datetime.now(ZoneInfo("UTC"))) for r in rows])
+            execute_values(cur, """
+                INSERT INTO ml_pxq_tier_scans (mla, tier_count, source, fetched_at)
+                VALUES %s
+                ON CONFLICT (mla) DO UPDATE SET
+                    tier_count = EXCLUDED.tier_count,
+                    source = EXCLUDED.source,
+                    fetched_at = EXCLUDED.fetched_at
+            """, [(m, c, "sweep", datetime.now(ZoneInfo("UTC"))) for m, c in scans])
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        log(f"❌ pxq sweep: flush fallo ({e})")
+        return False
+
+
+def _sweep_pxq_tiers(limit, dry_run, min_age_hours):
+    """Worker de /admin/sweep-pxq-tiers. Conexion dedicada + lotes, igual que el
+    sweep de costos de envio, para no pelearle el pool a pricing-app."""
+    import builtins, functools, sys
+    log = functools.partial(builtins.print, file=sys.stderr, flush=True)
+    conn = None
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT user_id FROM ml_tokens WHERE id = 1")
+            row = cur.fetchone()
+        if not row or row[0] is None:
+            log("❌ pxq sweep: ml_tokens.user_id ausente")
+            _pxq_sweep_state["errors"] += 1
+            return
+        seller_id = row[0]
+
+        admin_url = os.getenv("DATABASE_ADMIN_URL") or os.getenv("DATABASE_URL")
+        conn = psycopg2.connect(admin_url)
+        conn.autocommit = False
+
+        headers = {"Authorization": f"Bearer {get_token()}"}
+        all_mlas = _enumerate_active_mlas(seller_id, headers, limit, log)
+        if all_mlas is None:
+            _pxq_sweep_state["errors"] += 1
+            return
+
+        _pxq_sweep_state["total_enumerated"] = len(all_mlas)
+        log(f"🔍 pxq sweep: {len(all_mlas)} MLAs activos (dry_run={dry_run}, min_age_hours={min_age_hours})")
+
+        fresh_set = set()
+        if min_age_hours > 0 and all_mlas:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT mla FROM ml_pxq_tier_scans "
+                    "WHERE mla = ANY(%s) AND fetched_at > NOW() - (%s || ' hours')::interval",
+                    (all_mlas, min_age_hours),
+                )
+                fresh_set = {r[0] for r in cur.fetchall()}
+            conn.commit()
+            _pxq_sweep_state["skipped"] = len(fresh_set)
+
+        to_process = [m for m in all_mlas if m not in fresh_set]
+
+        if dry_run:
+            _pxq_sweep_state["processed"] = len(to_process)
+            log(f"✅ pxq sweep dry_run: would process {len(to_process)}, skip {len(fresh_set)}")
+            return
+
+        batch = []
+        for mla in to_process:
+            _pxq_sweep_state["last_mla"] = mla
+            tiers, err = _pxq_tiers_for_item(mla)
+            if tiers is None:
+                # Lectura fallida: no se escribe nada para esta MLA. Lo contrario
+                # borraria tramos reales por un 500 de ML.
+                log(f"⚠️ pxq sweep {mla}: {err}, skip")
+                _pxq_sweep_state["errors"] += 1
+                continue
+            batch.append((mla, tiers))
+            _pxq_sweep_state["processed"] += 1
+            if tiers:
+                _pxq_sweep_state["with_tiers"] += 1
+            if len(batch) >= PXQ_SWEEP_BATCH:
+                if not _flush_pxq_batch(conn, batch, log):
+                    _pxq_sweep_state["errors"] += 1
+                    log("❌ pxq sweep: abort tras fallo de flush")
+                    return
+                batch = []
+
+        if batch and not _flush_pxq_batch(conn, batch, log):
+            _pxq_sweep_state["errors"] += 1
+            return
+
+        log(f"✅ pxq sweep done: processed={_pxq_sweep_state['processed']} "
+            f"with_tiers={_pxq_sweep_state['with_tiers']} "
+            f"skipped={_pxq_sweep_state['skipped']} errors={_pxq_sweep_state['errors']}")
+    except Exception as e:
+        log(f"❌ pxq sweep: {e}")
+        _pxq_sweep_state["errors"] += 1
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _pxq_sweep_state["finished_at"] = datetime.now(ZoneInfo("UTC")).isoformat()
+        _pxq_sweep_state["running"] = False
+
+
+@app.route("/admin/sweep-pxq-tiers")
+def admin_sweep_pxq_tiers():
+    # status-only mode: ?status=1
+    if request.args.get("status"):
+        return jsonify(dict(_pxq_sweep_state))
+
+    force = request.args.get("force") == "1"
+    dry_run = request.args.get("dry_run") == "1"
+    try:
+        limit_raw = request.args.get("limit")
+        limit = int(limit_raw) if limit_raw else None
+    except ValueError:
+        return jsonify({"error": "limit must be int"}), 400
+    try:
+        min_age_hours = int(request.args.get("min_age_hours", 0))
+    except ValueError:
+        return jsonify({"error": "min_age_hours must be int"}), 400
+
+    with _pxq_sweep_lock:
+        if _pxq_sweep_state["running"] and not force:
+            return jsonify({"error": "sweep already running",
+                            "state": dict(_pxq_sweep_state)}), 409
+        _pxq_sweep_state.update({
+            "running": True,
+            "started_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+            "finished_at": None,
+            "processed": 0,
+            "skipped": 0,
+            "errors": 0,
+            "with_tiers": 0,
+            "total_enumerated": 0,
+            "last_mla": None,
+            "dry_run": dry_run,
+            "limit": limit,
+            "min_age_hours": min_age_hours,
+        })
+        # El thread arranca DENTRO del lock: afuera, dos requests concurrentes
+        # pasaban el guard de "ya esta corriendo" y arrancaban dos sweeps.
+        # _sweep_pxq_tiers no toma _pxq_sweep_lock, asi que no hay deadlock.
+        threading.Thread(
+            target=_sweep_pxq_tiers,
+            args=(limit, dry_run, min_age_hours),
+            daemon=True,
+        ).start()
+
+    return jsonify({
+        "status": "started",
+        "dry_run": dry_run,
+        "limit": limit,
+        "min_age_hours": min_age_hours,
+        "poll": "/admin/sweep-pxq-tiers?status=1",
+    }), 202
+
+
 def save_token_to_db(token_data: dict):
     expires_in = int(token_data.get("expires_in", 0))  # <-- tiene que existir antes del execute
 

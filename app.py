@@ -114,6 +114,13 @@ _sweep_lock = threading.Lock()
 FAVICON_DIR = "https://ml-webhook.gaussonline.com.ar/assets/white-g-BfxDaKwI.png"
 
 # ---- Rate-limited ML API wrapper ----
+# (connect, read). Sin timeout, requests espera para siempre: un socket que el
+# otro lado nunca cierra se lleva puesto al worker, y el proxy deja de fallar
+# para empezar a colgarse. Un consumidor puede reintentar un error; un cuelgue
+# le come el worker a el tambien. El read es holgado a proposito: /orders/search
+# sobre catalogos grandes es lento, pero lento no es infinito.
+ML_HTTP_TIMEOUT = (5, 30)
+
 _ml_api_lock = threading.Lock()
 _ml_api_min_interval = 0.15  # mínimo 150ms entre requests (~6.6 req/s)
 _ml_api_last_call = 0.0
@@ -131,7 +138,7 @@ def ml_api_get(url, headers=None, params=None, max_retries=3):
                 time.sleep(wait)
             _ml_api_last_call = time.time()
 
-        res = requests.get(url, headers=headers, params=params)
+        res = requests.get(url, headers=headers, params=params, timeout=ML_HTTP_TIMEOUT)
 
         if res.status_code == 429:
             # retry-after header o backoff exponencial
@@ -659,7 +666,29 @@ def _sweep_seller_shipping_costs(limit, dry_run, min_age_hours):
         _sweep_state["running"] = False
 
 
+# Serializa el refresh. Al reiniciar el proceso cada worker tiene ACCESS_TOKEN
+# en None y sale a refrescar a la vez. Eso no es solo trafico de mas: ML rota el
+# refresh_token, asi que la primera respuesta invalida el refresh que las otras
+# ya mandaron, y las perdedoras fallan o reintentan. Con /oauth/token lento y
+# sin timeout, esa estampida deja a todos los workers colgados y el sintoma es
+# justo el observado: las rutas que no salen a ML responden al instante y todo
+# lo que necesita token no responde nunca.
+_token_refresh_lock = threading.Lock()
+
+
 def refresh_token():
+    global ACCESS_TOKEN, EXPIRATION
+
+    with _token_refresh_lock:
+        # Doble chequeo: si otro worker refresco mientras esperabamos el lock,
+        # el token ya sirve y no hay que gastar otro refresh (ni rotar el de el).
+        if ACCESS_TOKEN is not None and time.time() < EXPIRATION:
+            return
+
+        _refresh_token_locked()
+
+
+def _refresh_token_locked():
     global ACCESS_TOKEN, EXPIRATION
 
     tok = load_token_from_db() or {}
@@ -675,7 +704,7 @@ def refresh_token():
         "refresh_token": refresh
     }
 
-    response = requests.post(url, data=payload)
+    response = requests.post(url, data=payload, timeout=ML_HTTP_TIMEOUT)
     data = response.json()
 
     if "access_token" in data:
@@ -1812,7 +1841,7 @@ def callback():
         "redirect_uri": ML_REDIRECT_URI,
     }
 
-    response = requests.post(token_url, data=payload)
+    response = requests.post(token_url, data=payload, timeout=ML_HTTP_TIMEOUT)
     token_data = response.json()
     # Antes se logueaba token_data entero: el access_token y el refresh_token
     # completos quedaban en texto plano en los logs en cada refresh. Solo campos

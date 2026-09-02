@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from psycopg2 import pool
 from contextlib import contextmanager
 import threading
+import re
 
 load_dotenv()
 
@@ -234,6 +235,31 @@ def build_ml_api_url(resource):
         return None, f"netloc resuelto invalido: {parsed.netloc!r}"
 
     return urlunsplit(parsed), None
+
+
+
+# ---- Ingesta de ordenes: allowlist propia, mas angosta que la de render ----
+#
+# La ingesta de ventas de pricing-app consume exactamente tres recursos de
+# lectura. /api/ml/render los sirve hoy, pero es un proxy de lectura arbitraria
+# que esta en modo observacion y se va a cerrar (ver render_meli_resource), y
+# /api/ml/preview solo acepta items. Construir una ingesta de produccion sobre
+# cualquiera de las dos era atarla a una ruta que va a cambiar.
+#
+# Esta lista es de patrones completos, no de prefijos: ML_RESOURCE_ALLOWLIST
+# habilita todo /orders/ y todo /shipments/ (incluye subrecursos con datos
+# personales del comprador, como /orders/<id>/feedback). Aca solo entra lo que
+# la ingesta necesita de verdad.
+ML_ORDERS_PATTERNS = (
+    re.compile(r"^/orders/search(\?[^\s]*)?$"),
+    re.compile(r"^/orders/\d+$"),
+    re.compile(r"^/shipments/\d+$"),
+)
+
+
+def ml_orders_resource_permitido(resource):
+    """True si el resource es uno de los tres que la ingesta puede leer."""
+    return isinstance(resource, str) and any(p.match(resource) for p in ML_ORDERS_PATTERNS)
 
 
 def ml_resource_in_allowlist(resource):
@@ -2213,6 +2239,55 @@ def get_topics():
         print("❌ Error obteniendo topics:", e)
         return jsonify({"error": str(e)}), 500
 
+
+
+
+@app.route("/api/ml/orders", methods=["GET"])
+def ml_orders_read():
+    """Lectura acotada de ordenes y envios para consumidores de ingesta.
+
+    Contrato: responde JSON SIEMPRE, incluso cuando ML contesta HTML o cuando
+    falla la red. El consumidor parsea una sola forma de respuesta.
+
+    El status de ML se preserva tal cual (404 de orden inexistente sigue siendo
+    404) para que el consumidor distinga "no existe" de "fallo la lectura".
+    """
+    resource = request.args.get("resource")
+    if not resource:
+        return jsonify({"error": "Falta parametro resource"}), 400
+
+    # Primero el patron: lo que no es de la ingesta no llega ni a construir URL.
+    if not ml_orders_resource_permitido(resource):
+        # El resource crudo va al log, no a la respuesta: reflejarlo seria un
+        # XSS si el consumidor lo pinta, y le confirma el payload al atacante.
+        print(f"\u26d4 ORDERS RESOURCE RECHAZADO resource={resource!r}")
+        return jsonify({
+            "error": "resource no permitido; se aceptan /orders/search, /orders/<id> y /shipments/<id>"
+        }), 400
+
+    # Y despues la validacion de host sobre la URL ya construida, que es la que
+    # protege el token del vendedor. El patron no la reemplaza.
+    ml_url, motivo = build_ml_api_url(resource)
+    if ml_url is None:
+        print(f"\u26d4 ORDERS RESOURCE INVALIDO motivo={motivo} resource={resource!r}")
+        return jsonify({"error": "resource invalido"}), 400
+
+    try:
+        res = ml_api_get(ml_url, headers={"Authorization": f"Bearer {get_token()}"})
+    except Exception as e:
+        print(f"\u274c Error leyendo {resource!r} de ML:", e)
+        return jsonify({"error": "no se pudo leer el recurso de ML"}), 502
+
+    try:
+        return jsonify(res.json()), res.status_code
+    except Exception:
+        # ML contesto algo que no es JSON (HTML de error, body vacio). El cuerpo
+        # crudo no se propaga: el consumidor espera JSON.
+        print(f"\u26a0\ufe0f Respuesta no-JSON de ML status={res.status_code} resource={resource!r}")
+        return jsonify({
+            "error": "respuesta no-JSON de ML",
+            "ml_status": res.status_code,
+        }), res.status_code if res.status_code >= 400 else 502
 
 
 @app.route("/api/ml/preview", methods=["GET", "POST"])

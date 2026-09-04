@@ -294,6 +294,10 @@ ML_ORDERS_PATTERNS = (
 ML_BILLING_PATTERNS = (
     re.compile(r"^/billing/integration/monthly/periods\?[^\s]*$"),
     re.compile(r"^/billing/integration/periods/key/[\w-]+/group/(?:ML|MP)/details(?:\?[^\s]*)?$"),
+    # Los totales del periodo. No trae las retenciones impositivas (esas no
+    # estan en la facturacion de ML), pero si total_amount, total_perception y
+    # payment_collected, que son contra lo que se concilia la suma del detalle.
+    re.compile(r"^/billing/integration/periods/key/[\w-]+/summary/details(?:\?[^\s]*)?$"),
 )
 
 # El limite de ML es 5/min por cuenta. Se deja un intervalo mas holgado que

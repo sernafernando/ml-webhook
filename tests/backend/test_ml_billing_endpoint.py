@@ -112,3 +112,43 @@ def test_el_429_es_json_y_reintentable(client, ml_calls):
 def test_no_acepta_post(client):
     assert client.post("/api/ml/billing",
                        query_string={"resource": DETALLE}).status_code == 405
+
+
+# =====================================================================
+# summary/details — los totales del periodo
+# =====================================================================
+# No trae las retenciones impositivas (no viven en facturacion de ML), pero si
+# total_amount, total_perception y payment_collected, que son los totales contra
+# los que se concilia lo que suma el detalle.
+
+SUMMARY = "/billing/integration/periods/key/2026-09-01/summary/details?group=ML&document_type=BILL"
+
+
+def test_acepta_el_resumen_del_periodo(client, ml_calls):
+    res = client.get("/api/ml/billing", query_string={"resource": SUMMARY})
+
+    assert res.status_code == 200
+    assert ml_calls[0] == f"https://api.mercadolibre.com{SUMMARY}"
+
+
+def test_el_resumen_tambien_esta_throttleado(client, ml_calls):
+    """Comparte el limite de 5/min de la cuenta con el resto de facturacion."""
+    assert client.get("/api/ml/billing",
+                      query_string={"resource": SUMMARY}).status_code == 200
+
+    assert client.get("/api/ml/billing",
+                      query_string={"resource": SUMMARY}).status_code == 429
+    assert len(ml_calls) == 1
+
+
+@pytest.mark.parametrize("resource", [
+    "/billing/integration/periods/key/2026-09-01/summary",          # sin /details
+    "/billing/integration/periods/key/2026-09-01/summary/details/x",
+    "/v1/account/settlement_report/list",   # API de Mercado Pago, otro host
+])
+def test_el_resumen_no_abre_recursos_vecinos(client, monkeypatch, resource):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: pytest.fail("No debe salir ninguna request"))
+
+    assert client.get("/api/ml/billing",
+                      query_string={"resource": resource}).status_code == 400

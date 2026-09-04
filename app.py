@@ -298,6 +298,10 @@ ML_BILLING_PATTERNS = (
     # estan en la facturacion de ML), pero si total_amount, total_perception y
     # payment_collected, que son contra lo que se concilia la suma del detalle.
     re.compile(r"^/billing/integration/periods/key/[\w-]+/summary/details(?:\?[^\s]*)?$"),
+    # Los documentos del periodo. Cada uno trae count_details, o sea cuantas
+    # lineas de detalle tiene: es contra lo que un consumidor que pagina el
+    # detalle verifica que no se le escapo una pagina.
+    re.compile(r"^/billing/integration/periods/key/[\w-]+/documents(?:\?[^\s]*)?$"),
 )
 
 # El limite de ML es 5/min por cuenta. Se deja un intervalo mas holgado que

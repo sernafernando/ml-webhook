@@ -152,3 +152,40 @@ def test_el_resumen_no_abre_recursos_vecinos(client, monkeypatch, resource):
 
     assert client.get("/api/ml/billing",
                       query_string={"resource": resource}).status_code == 400
+
+
+# =====================================================================
+# documents — los documentos legales del periodo
+# =====================================================================
+# Trae count_details por documento, que es cuantas lineas de detalle tiene cada
+# uno. Sin eso, un consumidor que pagina el detalle no tiene contra que verificar
+# que no se le escapo una pagina.
+
+DOCUMENTS = "/billing/integration/periods/key/2026-09-01/documents?group=ML&document_type=BILL&limit=50"
+
+
+def test_acepta_los_documentos_del_periodo(client, ml_calls):
+    res = client.get("/api/ml/billing", query_string={"resource": DOCUMENTS})
+
+    assert res.status_code == 200
+    assert ml_calls[0] == f"https://api.mercadolibre.com{DOCUMENTS}"
+
+
+def test_los_documentos_tambien_estan_throttleados(client, ml_calls):
+    assert client.get("/api/ml/billing",
+                      query_string={"resource": DOCUMENTS}).status_code == 200
+    assert client.get("/api/ml/billing",
+                      query_string={"resource": DOCUMENTS}).status_code == 429
+    assert len(ml_calls) == 1
+
+
+@pytest.mark.parametrize("resource", [
+    "/billing/integration/periods/key/2026-09-01/documents/5140824542",
+    "/billing/integration/periods/key/2026-09-01/documents/../../users/123",
+])
+def test_documents_no_abre_subrecursos(client, monkeypatch, resource):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: pytest.fail("No debe salir ninguna request"))
+
+    assert client.get("/api/ml/billing",
+                      query_string={"resource": resource}).status_code == 400

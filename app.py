@@ -270,6 +270,47 @@ ML_ORDERS_PATTERNS = (
 )
 
 
+
+# ---- Facturacion: lectura para conciliar la liquidacion ----
+#
+# Por que hace falta aparte de /orders y /shipments: la orden no alcanza para el
+# neto. Verificado contra la orden 2000018265495500: taxes.amount=null,
+# payments[].taxes_amount=0.0, payments[].fee_details=null. Las retenciones y los
+# impuestos solo aparecen del lado de facturacion.
+#
+# Por que NO se habilita /payments/<id> ni /collections/<id>, que serian el
+# camino corto:
+#   /payments/<id>     responde 404 "Payment not found": es la API de Mercado
+#                      Pago, y el token de ML no la abre.
+#   /collections/<id>  SI responde, pero devuelve datos personales del comprador
+#                      (nombre del titular y numero de documento, aunque
+#                      enmascarados). Mismo criterio que dejo afuera a
+#                      /orders/<id>/feedback: la conciliacion no los necesita.
+# El detalle de facturacion, en cambio, trae order_id, el concepto y el monto
+# sin ningun dato del comprador.
+#
+# Ruta separada de /api/ml/orders a proposito: esta API tiene un rate limit
+# propio de 5 requests por minuto POR CUENTA, mucho mas duro que el del resto.
+ML_BILLING_PATTERNS = (
+    re.compile(r"^/billing/integration/monthly/periods\?[^\s]*$"),
+    re.compile(r"^/billing/integration/periods/key/[\w-]+/group/(?:ML|MP)/details(?:\?[^\s]*)?$"),
+)
+
+# El limite de ML es 5/min por cuenta. Se deja un intervalo mas holgado que
+# 60/5=12s a proposito: el limite es de la CUENTA, no de este endpoint, y no
+# somos el unico proceso que puede pegarle. Ademas la doc de ML dice que el dato
+# es estatico durante el dia y que alcanza una consulta diaria, asi que nadie
+# legitimo necesita ir mas rapido que esto.
+BILLING_MIN_INTERVAL_SECONDS = 15
+
+_billing_lock = threading.Lock()
+_billing_last_call = 0.0
+
+
+def ml_billing_resource_permitido(resource):
+    return isinstance(resource, str) and any(p.match(resource) for p in ML_BILLING_PATTERNS)
+
+
 def ml_orders_resource_permitido(resource):
     """True si el resource es uno de los tres que la ingesta puede leer."""
     return isinstance(resource, str) and any(p.match(resource) for p in ML_ORDERS_PATTERNS)
@@ -2319,6 +2360,63 @@ def ml_orders_read():
         # ML contesto algo que no es JSON (HTML de error, body vacio). El cuerpo
         # crudo no se propaga: el consumidor espera JSON.
         print(f"\u26a0\ufe0f Respuesta no-JSON de ML status={res.status_code} resource={resource!r}")
+        return jsonify({
+            "error": "respuesta no-JSON de ML",
+            "ml_status": res.status_code,
+        }), res.status_code if res.status_code >= 400 else 502
+
+
+
+@app.route("/api/ml/billing", methods=["GET"])
+def ml_billing_read():
+    """Lectura de facturacion para conciliar lo que ML liquida.
+
+    Mismo contrato de respuesta que /api/ml/orders: JSON siempre, status de ML
+    preservado, el resource crudo va al log y no al body.
+
+    Suma un 429 propio. El rate limit de facturacion (5/min) es de la CUENTA:
+    un consumidor que consulte por orden lo agota y deja sin facturacion a todo
+    lo demas que corre en esta app. Frenarlo aca cuesta un 429 reintentable;
+    dejarlo pasar cuesta el limite de la cuenta entera.
+    """
+    global _billing_last_call
+
+    resource = request.args.get("resource")
+    if not resource:
+        return jsonify({"error": "Falta parametro resource"}), 400
+
+    if not ml_billing_resource_permitido(resource):
+        print(f"\u26d4 BILLING RESOURCE RECHAZADO resource={resource!r}")
+        return jsonify({
+            "error": "resource no permitido; se aceptan los periodos y el detalle de facturacion"
+        }), 400
+
+    ml_url, motivo = build_ml_api_url(resource)
+    if ml_url is None:
+        print(f"\u26d4 BILLING RESOURCE INVALIDO motivo={motivo} resource={resource!r}")
+        return jsonify({"error": "resource invalido"}), 400
+
+    # El throttle rechaza en vez de esperar: hacer dormir al request solo mueve
+    # el problema al worker, y el consumidor ya sabe reintentar un 429.
+    with _billing_lock:
+        restante = BILLING_MIN_INTERVAL_SECONDS - (time.time() - _billing_last_call)
+        if restante > 0:
+            return jsonify({
+                "error": "facturacion throttleada; el limite de ML es por cuenta",
+                "retry_after": int(restante) + 1,
+            }), 429, {"Retry-After": str(int(restante) + 1)}
+        _billing_last_call = time.time()
+
+    try:
+        res = ml_api_get(ml_url, headers={"Authorization": f"Bearer {get_token()}"})
+    except Exception as e:
+        print(f"\u274c Error leyendo {resource!r} de facturacion:", e)
+        return jsonify({"error": "no se pudo leer facturacion de ML"}), 502
+
+    try:
+        return jsonify(res.json()), res.status_code
+    except Exception:
+        print(f"\u26a0\ufe0f Respuesta no-JSON de facturacion status={res.status_code}")
         return jsonify({
             "error": "respuesta no-JSON de ML",
             "ml_status": res.status_code,

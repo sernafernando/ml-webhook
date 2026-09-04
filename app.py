@@ -2338,7 +2338,7 @@ def ml_orders_read():
         # XSS si el consumidor lo pinta, y le confirma el payload al atacante.
         print(f"\u26d4 ORDERS RESOURCE RECHAZADO resource={resource!r}")
         return jsonify({
-            "error": "resource no permitido; se aceptan /orders/search, /orders/<id> y /shipments/<id>"
+            "error": "resource no permitido; se aceptan /orders/search, /orders/<id>, /shipments/<id> y /shipments/<id>/costs"
         }), 400
 
     # Y despues la validacion de host sobre la URL ya construida, que es la que

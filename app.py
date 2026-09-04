@@ -261,6 +261,12 @@ ML_ORDERS_PATTERNS = (
     re.compile(r"^/orders/search(\?[^\s]*)?$"),
     re.compile(r"^/orders/\d+$"),
     re.compile(r"^/shipments/\d+$"),
+    # El desglose de costos del envio. Hace falta aparte de /shipments/<id>
+    # porque la orden trae shipping_cost=null y el shipment solo trae base_cost,
+    # que es el costo TOTAL: la parte que ML le cobra al vendedor esta en
+    # senders[].cost. Deducirla como "la mitad de base_cost" seria asumir una
+    # proporcion que ML puede cambiar sin avisar.
+    re.compile(r"^/shipments/\d+/costs$"),
 )
 
 

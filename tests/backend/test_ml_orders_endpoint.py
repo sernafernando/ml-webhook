@@ -167,3 +167,33 @@ def test_error_interno_se_traduce_a_json(client, monkeypatch):
 def test_no_acepta_post(client):
     assert client.post("/api/ml/orders",
                        query_string={"resource": "/orders/2000012345"}).status_code == 405
+
+
+# =====================================================================
+# /shipments/<id>/costs — el desglose con la parte del vendedor separada
+# =====================================================================
+# La orden trae shipping_cost=null y el shipment trae base_cost, que es el costo
+# total. La parte que ML le cobra al vendedor sale de senders[].cost. Inferirla
+# como "la mitad de base_cost" es asumir una proporcion que ML puede cambiar.
+
+def test_acepta_el_desglose_de_costos_del_envio(client, ml_calls):
+    resource = "/shipments/47925243368/costs"
+
+    res = client.get("/api/ml/orders", query_string={"resource": resource})
+
+    assert res.status_code == 200
+    assert ml_calls[0]["url"] == f"https://api.mercadolibre.com{resource}"
+
+
+@pytest.mark.parametrize("resource", [
+    "/shipments/47925243368/items",     # otros subrecursos siguen afuera
+    "/shipments/47925243368/costs/x",
+    "/shipments/abc/costs",
+    "/shipments//costs",
+])
+def test_costs_no_abre_el_resto_de_los_subrecursos(client, monkeypatch, resource):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: pytest.fail("No debe salir ninguna request"))
+
+    assert client.get("/api/ml/orders",
+                      query_string={"resource": resource}).status_code == 400

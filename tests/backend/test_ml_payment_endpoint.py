@@ -29,6 +29,8 @@ PAGO_CRUDO = {
     "transaction_amount": 730000,
     "shipping_amount": 0,
     "coupon_amount": 0,
+    "taxes_amount": 0,
+    "transaction_amount_refunded": 0,
     "transaction_details": {
         "net_received_amount": 519170,
         "total_paid_amount": 730000,
@@ -254,3 +256,80 @@ def test_un_pago_sin_esos_campos_no_rompe(client, monkeypatch):
 
     assert d["shipping_amount"] is None
     assert d["coupon_amount"] is None
+
+
+
+# =====================================================================
+# Devoluciones: el neto de un pago devuelto sigue siendo positivo
+# =====================================================================
+# Verificado contra el pago real 176756836953 (orden 2000018325540962): status
+# refunded, transaction_amount_refunded 47000 (todo), y net_received_amount
+# igual 27614. Sin el monto reembolsado a nivel del pago, una venta cancelada
+# aparece como si hubiera dejado plata.
+
+PAGO_DEVUELTO = {
+    "id": 176756836953,
+    "status": "refunded",
+    "order": {"id": 2000018325540962},
+    "transaction_amount": 47000,
+    "shipping_amount": 0,
+    "coupon_amount": 0,
+    "taxes_amount": 0,
+    "transaction_amount_refunded": 47000,
+    "transaction_details": {"net_received_amount": 27614, "total_paid_amount": 47000},
+    "charges_details": [
+        {"name": "tax_withholding_collector-debitos_creditos", "type": "tax",
+         "amounts": {"original": 282, "refunded": 282}},
+        {"name": "tax_withholding_sirtac-catamarca", "type": "tax",
+         "amounts": {"original": 846, "refunded": 846}},
+        {"name": "meli_percentage_fee", "type": "fee",
+         "amounts": {"original": 18258, "refunded": 18258}},
+    ],
+}
+
+
+def test_proyecta_el_monto_reembolsado(client, monkeypatch):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(payload=PAGO_DEVUELTO))
+
+    d = client.get("/api/ml/payment",
+                   query_string={"payment_id": "176756836953"}).get_json()
+
+    assert d["transaction_amount_refunded"] == 47000
+    assert d["taxes_amount"] == 0
+    # El neto sigue positivo: es el dato que hace falta para no mostrar una
+    # venta cancelada como si hubiera dejado plata.
+    assert d["net_received_amount"] == 27614
+
+
+def test_el_refunded_por_cargo_sigue_disponible_como_contraste(client, monkeypatch):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(payload=PAGO_DEVUELTO))
+
+    d = client.get("/api/ml/payment",
+                   query_string={"payment_id": "176756836953"}).get_json()
+
+    assert sum(c["refunded"] for c in d["charges_details"]) == 19386
+
+
+def test_los_campos_nuevos_no_rompen_un_pago_incompleto(client, monkeypatch):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(payload={"id": 1, "status": "pending"}))
+
+    d = client.get("/api/ml/payment", query_string={"payment_id": "1"}).get_json()
+
+    assert d["taxes_amount"] is None
+    assert d["transaction_amount_refunded"] is None
+
+
+def test_la_proyeccion_sigue_sin_filtrar_datos_del_comprador(client, mp_calls):
+    """Se agregaron campos: este test vuelve a fijar que no entro nada mas."""
+    d = client.get("/api/ml/payment",
+                   query_string={"payment_id": "176106034911"}).get_json()
+
+    assert set(d) == {
+        "payment_id", "order_id", "status", "currency_id", "date_approved",
+        "transaction_amount", "shipping_amount", "coupon_amount",
+        "taxes_amount", "transaction_amount_refunded",
+        "total_paid_amount", "net_received_amount", "charges_details",
+    }

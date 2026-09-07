@@ -100,6 +100,30 @@ Los archivos compilados se sirven desde `frontend/dist/` por el backend Flask.
 - `GET /api/ml/render?resource=...` → muestra respuesta parseada en HTML
 - `/` → frontend con visualizador de webhooks
 
+### Lectura para consumidores de ingesta
+
+Rutas pensadas para que otras apps lean de ML sin depender de `/api/ml/render`,
+que es un proxy de lectura arbitraria y está marcado para cerrarse.
+
+- `GET /api/ml/orders?resource=...` → órdenes y envíos. Acepta `/orders/search`,
+  `/orders/{id}`, `/shipments/{id}` y `/shipments/{id}/costs`. Devuelve el cuerpo
+  de ML tal cual y preserva su status.
+- `GET /api/ml/billing?resource=...` → facturación: períodos, documentos, detalle
+  y resumen. Throttleado a una llamada cada 15s, porque el límite de la API de
+  facturación (5/min) es **de la cuenta** y un consumidor que la llame por orden
+  deja sin facturación al resto de la app.
+- `GET /api/ml/payment?payment_id={id}` → neto liquidado y retenciones, desde
+  Mercado Pago. La respuesta se **proyecta** a los montos: el pago crudo trae la
+  tarjeta del comprador, su IP y sus datos de contacto.
+
+> **Los clientes Python tienen que mandar un `User-Agent` explícito.**
+> Hay Cloudflare adelante y bloquea la firma `Python-urllib/*` con
+> `403 error code: 1010`. Verificado: `Python-urllib/3.14` → 403, mientras
+> `curl/8.5.0`, `python-requests/2.32.5`, `Mozilla/5.0` y hasta el `User-Agent`
+> vacío → 200. No es volumen ni el token: un 403 por credencial dice
+> `PA_UNAUTHORIZED_RESULT_FROM_POLICIES`, no `error code: 1010`.
+> `urllib.request` no manda `User-Agent` propio, así que hay que ponérselo.
+
 ---
 
 ## 📝 Notas

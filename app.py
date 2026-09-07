@@ -392,6 +392,16 @@ def proyectar_pago(pago):
         # del pago: transaction_amount + shipping_amount - cargos propios.
         "shipping_amount": pago.get("shipping_amount"),
         "coupon_amount": pago.get("coupon_amount"),
+        # Cuanto se devolvio. Hace falta a nivel del pago porque el neto de un
+        # pago devuelto sigue siendo POSITIVO: el pago 176756836953 tiene todo
+        # reembolsado y net_received_amount 27614 igual. Sin este campo una
+        # venta cancelada se muestra como si hubiera dejado plata.
+        "transaction_amount_refunded": pago.get("transaction_amount_refunded"),
+        # Ojo al usarlo: NO coincide con la suma de los charges_details de
+        # type=tax. En el mismo pago devuelto, taxes_amount vale 0 mientras esos
+        # cargos suman 1128. Se proyecta porque lo reporta MP, no porque sirva
+        # para validar el desglose.
+        "taxes_amount": pago.get("taxes_amount"),
         "total_paid_amount": detalles.get("total_paid_amount"),
         "net_received_amount": detalles.get("net_received_amount"),
         "charges_details": cargos,

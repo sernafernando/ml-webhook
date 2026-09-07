@@ -27,6 +27,8 @@ PAGO_CRUDO = {
     "date_approved": "2026-08-20T10:00:00.000-04:00",
     "order": {"id": 2000018265495500, "type": "mercadolibre"},
     "transaction_amount": 730000,
+    "shipping_amount": 0,
+    "coupon_amount": 0,
     "transaction_details": {
         "net_received_amount": 519170,
         "total_paid_amount": 730000,
@@ -189,3 +191,66 @@ def test_error_de_mp_se_traduce_a_json(client, monkeypatch):
 def test_no_acepta_post(client):
     assert client.post("/api/ml/payment",
                        query_string={"payment_id": "1"}).status_code == 405
+
+
+
+# =====================================================================
+# shipping_amount: sin el, la identidad del neto no cierra sola
+# =====================================================================
+# La base del neto no es transaction_amount sino lo efectivamente pagado, que
+# incluye el envio que puso el comprador. Sin shipping_amount el consumidor
+# tiene que ir a buscar paid_amount a la orden, y ahi se rompe: cuando una orden
+# tiene mas de un pago, su paid_amount es el total de la ORDEN, no el de ese
+# pago. Con shipping_amount la identidad queda entera adentro del pago.
+
+PAGO_CON_ENVIO = {
+    "id": 176726663717,
+    "status": "approved",
+    "order": {"id": 2000018322969636},
+    "transaction_amount": 7371.11,
+    "shipping_amount": 6990,
+    "coupon_amount": 0,
+    "transaction_details": {"net_received_amount": 14231.86, "total_paid_amount": 7371.11},
+    "charges_details": [
+        {"name": "tax_withholding_sirtac-buenos_aires", "type": "tax",
+         "amounts": {"original": 43.08, "refunded": 0}},
+        {"name": "tax_withholding_collector-debitos_creditos", "type": "tax",
+         "amounts": {"original": 86.17, "refunded": 0}},
+    ],
+}
+
+
+def test_proyecta_shipping_amount_y_coupon_amount(client, monkeypatch):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(payload=PAGO_CON_ENVIO))
+
+    d = client.get("/api/ml/payment",
+                   query_string={"payment_id": "176726663717"}).get_json()
+
+    assert d["shipping_amount"] == 6990
+    assert d["coupon_amount"] == 0
+
+
+def test_la_identidad_del_neto_cierra_dentro_del_pago(client, monkeypatch):
+    """Verificado contra el pago real 176726663717, de una orden con dos pagos
+    aprobados: es el caso donde usar el paid_amount de la orden no cerraba."""
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(payload=PAGO_CON_ENVIO))
+
+    d = client.get("/api/ml/payment",
+                   query_string={"payment_id": "176726663717"}).get_json()
+
+    propios = sum(c["amount"] for c in d["charges_details"])
+    calculado = d["transaction_amount"] + d["shipping_amount"] - propios
+
+    assert abs(calculado - d["net_received_amount"]) < 0.01
+
+
+def test_un_pago_sin_esos_campos_no_rompe(client, monkeypatch):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(payload={"id": 1, "status": "pending"}))
+
+    d = client.get("/api/ml/payment", query_string={"payment_id": "1"}).get_json()
+
+    assert d["shipping_amount"] is None
+    assert d["coupon_amount"] is None

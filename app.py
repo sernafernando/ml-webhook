@@ -385,6 +385,13 @@ def proyectar_pago(pago):
         "currency_id": pago.get("currency_id"),
         "date_approved": pago.get("date_approved"),
         "transaction_amount": pago.get("transaction_amount"),
+        # El envio que pago el comprador. Sin esto la identidad del neto no
+        # cierra sola: habria que ir a buscar paid_amount a la orden, y cuando
+        # una orden tiene mas de un pago ese campo es el total de la ORDEN, no
+        # el de ese pago. Con shipping_amount la cuenta queda entera adentro
+        # del pago: transaction_amount + shipping_amount - cargos propios.
+        "shipping_amount": pago.get("shipping_amount"),
+        "coupon_amount": pago.get("coupon_amount"),
         "total_paid_amount": detalles.get("total_paid_amount"),
         "net_received_amount": detalles.get("net_received_amount"),
         "charges_details": cargos,

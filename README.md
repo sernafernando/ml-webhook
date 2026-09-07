@@ -106,8 +106,9 @@ Rutas pensadas para que otras apps lean de ML sin depender de `/api/ml/render`,
 que es un proxy de lectura arbitraria y está marcado para cerrarse.
 
 - `GET /api/ml/orders?resource=...` → órdenes y envíos. Acepta `/orders/search`,
-  `/orders/{id}`, `/shipments/{id}` y `/shipments/{id}/costs`. Devuelve el cuerpo
-  de ML tal cual y preserva su status.
+  `/orders/{id}`, `/orders/{id}/discounts`, `/shipments/{id}`,
+  `/shipments/{id}/costs`, `/shipments/{id}/items` y `/packs/{id}`. Devuelve el
+  cuerpo de ML tal cual y preserva su status.
 - `GET /api/ml/billing?resource=...` → facturación: períodos, documentos, detalle
   y resumen. Throttleado a una llamada cada 15s, porque el límite de la API de
   facturación (5/min) es **de la cuenta** y un consumidor que la llame por orden
@@ -115,6 +116,11 @@ que es un proxy de lectura arbitraria y está marcado para cerrarse.
 - `GET /api/ml/payment?payment_id={id}` → neto liquidado y retenciones, desde
   Mercado Pago. La respuesta se **proyecta** a los montos: el pago crudo trae la
   tarjeta del comprador, su IP y sus datos de contacto.
+- `GET /api/ml/claims?resource=...` → reclamos y devoluciones, para saber por qué
+  se canceló una venta. Acepta `/post-purchase/v1/claims/search` y
+  `/post-purchase/v1/claims/{id}`. También se **proyecta**: quedan el motivo, el
+  estado, las fechas y a qué orden aplica, sin `players[]`. Los subrecursos de
+  conversación (`/messages`, `/attachments`) quedan afuera a propósito.
 
 > **Los clientes Python tienen que mandar un `User-Agent` explícito.**
 > Hay Cloudflare adelante y bloquea la firma `Python-urllib/*` con

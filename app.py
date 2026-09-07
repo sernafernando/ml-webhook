@@ -267,6 +267,18 @@ ML_ORDERS_PATTERNS = (
     # senders[].cost. Deducirla como "la mitad de base_cost" seria asumir una
     # proporcion que ML puede cambiar sin avisar.
     re.compile(r"^/shipments/\d+/costs$"),
+    # Que items viajan en un envio, con su order_id. Es la relacion
+    # envio-orden autoritativa; inferirla desde las ordenes arriesga doble
+    # conteo cuando un pack comparte envio.
+    re.compile(r"^/shipments/\d+/items$"),
+    # La identidad del pack. Reconstruirla cruzando pack_id entre las ordenes
+    # barridas la deja incompleta si una hermana cae fuera de la ventana, y el
+    # costo sale mas bajo que el real sin ningun sintoma. orders[] viene entero,
+    # asi que distingue "pack de una sola orden" de "pack incompleto".
+    re.compile(r"^/packs/\d+$"),
+    # De que bolsillo sale cada descuento: trae supplier.funding_mode y
+    # amounts.seller, que es lo que separa un cupon que pone ML de uno nuestro.
+    re.compile(r"^/orders/\d+/discounts$"),
 )
 
 
@@ -410,6 +422,47 @@ def proyectar_pago(pago):
 
 def ml_billing_resource_permitido(resource):
     return isinstance(resource, str) and any(p.match(resource) for p in ML_BILLING_PATTERNS)
+
+
+
+# ---- Reclamos y devoluciones: por que se cancelo una venta ----
+#
+# Sin esto, un comprador que se arrepintio antes de despachar y una devolucion
+# con el producto ya en la calle se ven identicos, y para el neto no lo son.
+#
+# Se proyecta igual que el pago, y por la misma razon: el reclamo trae players[]
+# con el user_id del comprador, y para saber el motivo y el estado no hace falta
+# saber quien reclamo. Los subrecursos de conversacion (/messages, /attachments)
+# quedan afuera: ahi si hay texto escrito por el comprador.
+ML_CLAIMS_PATTERNS = (
+    re.compile(r"^/post-purchase/v1/claims/search\?[^\s]*$"),
+    re.compile(r"^/post-purchase/v1/claims/\d+$"),
+)
+
+
+def ml_claims_resource_permitido(resource):
+    return isinstance(resource, str) and any(p.match(resource) for p in ML_CLAIMS_PATTERNS)
+
+
+def proyectar_reclamo(reclamo):
+    """Deja el motivo, el estado, las fechas y a que orden o envio aplica."""
+    reclamo = reclamo if isinstance(reclamo, dict) else {}
+    return {
+        "id": reclamo.get("id"),
+        "type": reclamo.get("type"),
+        "stage": reclamo.get("stage"),
+        "status": reclamo.get("status"),
+        "reason_id": reclamo.get("reason_id"),
+        "resolution": reclamo.get("resolution"),
+        "resource": reclamo.get("resource"),
+        "resource_id": reclamo.get("resource_id"),
+        "parent_id": reclamo.get("parent_id"),
+        "quantity_type": reclamo.get("quantity_type"),
+        "claimed_quantity": reclamo.get("claimed_quantity"),
+        "fulfilled": reclamo.get("fulfilled"),
+        "date_created": reclamo.get("date_created"),
+        "last_updated": reclamo.get("last_updated"),
+    }
 
 
 def ml_orders_resource_permitido(resource):
@@ -2439,7 +2492,7 @@ def ml_orders_read():
         # XSS si el consumidor lo pinta, y le confirma el payload al atacante.
         print(f"\u26d4 ORDERS RESOURCE RECHAZADO resource={resource!r}")
         return jsonify({
-            "error": "resource no permitido; se aceptan /orders/search, /orders/<id>, /shipments/<id> y /shipments/<id>/costs"
+            "error": "resource no permitido; se aceptan /orders/search, /orders/<id>, /orders/<id>/discounts, /shipments/<id>, /shipments/<id>/costs, /shipments/<id>/items y /packs/<id>"
         }), 400
 
     # Y despues la validacion de host sobre la URL ya construida, que es la que
@@ -2561,6 +2614,53 @@ def ml_payment_read():
                         "mp_status": res.status_code}), res.status_code
 
     return jsonify(proyectar_pago(cuerpo)), 200
+
+
+
+@app.route("/api/ml/claims", methods=["GET"])
+def ml_claims_read():
+    """Reclamos y devoluciones, proyectados. Acepta la busqueda y el detalle."""
+    resource = request.args.get("resource")
+    if not resource:
+        return jsonify({"error": "Falta parametro resource"}), 400
+
+    if not ml_claims_resource_permitido(resource):
+        print(f"\u26d4 CLAIMS RESOURCE RECHAZADO resource={resource!r}")
+        return jsonify({
+            "error": "resource no permitido; se aceptan /post-purchase/v1/claims/search y /post-purchase/v1/claims/<id>"
+        }), 400
+
+    ml_url, motivo = build_ml_api_url(resource)
+    if ml_url is None:
+        print(f"\u26d4 CLAIMS RESOURCE INVALIDO motivo={motivo} resource={resource!r}")
+        return jsonify({"error": "resource invalido"}), 400
+
+    try:
+        res = ml_api_get(ml_url, headers={"Authorization": f"Bearer {get_token()}"})
+    except Exception as e:
+        print(f"\u274c Error leyendo {resource!r} de reclamos:", e)
+        return jsonify({"error": "no se pudo leer el reclamo"}), 502
+
+    try:
+        cuerpo = res.json()
+    except Exception:
+        print(f"\u26a0\ufe0f Respuesta no-JSON de reclamos status={res.status_code}")
+        return jsonify({"error": "respuesta no-JSON de ML",
+                        "ml_status": res.status_code}), 502
+
+    if res.status_code >= 400:
+        print(f"\u26a0\ufe0f Reclamo {resource!r} status={res.status_code}")
+        return jsonify({"error": "ML rechazo la lectura del reclamo",
+                        "ml_status": res.status_code}), res.status_code
+
+    # La busqueda devuelve {data, paging}; el detalle, el reclamo solo.
+    if isinstance(cuerpo, dict) and isinstance(cuerpo.get("data"), list):
+        return jsonify({
+            "data": [proyectar_reclamo(r) for r in cuerpo["data"]],
+            "paging": cuerpo.get("paging"),
+        }), 200
+
+    return jsonify(proyectar_reclamo(cuerpo)), 200
 
 
 @app.route("/api/ml/preview", methods=["GET", "POST"])

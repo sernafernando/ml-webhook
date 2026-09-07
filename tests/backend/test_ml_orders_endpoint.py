@@ -76,7 +76,7 @@ def test_acepta_los_recursos_de_la_ingesta(client, ml_calls, resource):
     "/orders/search/../../users/123",
     "/orders/2000012345/feedback",
     "/orders/abc",                        # id no numerico
-    "/shipments/44556677/items",
+    "/shipments/44556677/history",
     "/oauth/token",
     "@atacante.tld/orders/search",        # el host real seria atacante.tld
     "/orders/\n2000012345",               # caracteres de control
@@ -186,12 +186,68 @@ def test_acepta_el_desglose_de_costos_del_envio(client, ml_calls):
 
 
 @pytest.mark.parametrize("resource", [
-    "/shipments/47925243368/items",     # otros subrecursos siguen afuera
+    "/shipments/47925243368/history",   # otros subrecursos siguen afuera
     "/shipments/47925243368/costs/x",
     "/shipments/abc/costs",
     "/shipments//costs",
 ])
 def test_costs_no_abre_el_resto_de_los_subrecursos(client, monkeypatch, resource):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: pytest.fail("No debe salir ninguna request"))
+
+    assert client.get("/api/ml/orders",
+                      query_string={"resource": resource}).status_code == 400
+
+
+# =====================================================================
+# packs, items del envio y descuentos de la orden
+# =====================================================================
+
+def test_acepta_el_pack(client, ml_calls):
+    """Un pack se reconstruia cruzando pack_id entre las ordenes barridas, asi
+    que quedaba incompleto si una hermana caia fuera de la ventana: el costo
+    daba mas bajo que el real y sin sintoma. /packs/<id> trae orders[] completo,
+    que es lo que distingue 'pack de una orden' de 'pack incompleto'."""
+    resource = "/packs/2000014906212865"
+
+    res = client.get("/api/ml/orders", query_string={"resource": resource})
+
+    assert res.status_code == 200
+    assert ml_calls[0]["url"] == f"https://api.mercadolibre.com{resource}"
+
+
+def test_acepta_los_items_del_envio(client, ml_calls):
+    """Trae order_id por item: es la relacion envio-orden autoritativa, en vez
+    de inferirla desde las ordenes y arriesgar un doble conteo."""
+    resource = "/shipments/47925243368/items"
+
+    res = client.get("/api/ml/orders", query_string={"resource": resource})
+
+    assert res.status_code == 200
+    assert ml_calls[0]["url"] == f"https://api.mercadolibre.com{resource}"
+
+
+def test_acepta_los_descuentos_de_la_orden(client, ml_calls):
+    """Trae supplier.funding_mode y amounts.seller, o sea de que bolsillo sale
+    cada descuento."""
+    resource = "/orders/2000018265495500/discounts"
+
+    res = client.get("/api/ml/orders", query_string={"resource": resource})
+
+    assert res.status_code == 200
+    assert ml_calls[0]["url"] == f"https://api.mercadolibre.com{resource}"
+
+
+@pytest.mark.parametrize("resource", [
+    "/packs/abc",
+    "/packs/2000014906212865/orders",
+    "/packs/",
+    "/shipments/47925243368/items/1",
+    "/orders/2000018265495500/discounts/1",
+    "/orders/2000018265495500/feedback",   # sigue afuera
+    "/orders/2000018265495500/billing_info",
+])
+def test_los_recursos_nuevos_no_abren_vecinos(client, monkeypatch, resource):
     monkeypatch.setattr(app_module, "ml_api_get",
                         lambda *a, **k: pytest.fail("No debe salir ninguna request"))
 

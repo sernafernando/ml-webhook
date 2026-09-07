@@ -189,3 +189,52 @@ def test_documents_no_abre_subrecursos(client, monkeypatch, resource):
 
     assert client.get("/api/ml/billing",
                       query_string={"resource": resource}).status_code == 400
+
+
+# =====================================================================
+# Detalle por orden, sin pasar por el periodo
+# =====================================================================
+# El detalle de un periodo tope a 10.000 con offset, y hay periodos de 22.000+
+# cargos. Para mirar ordenes puntuales no hace falta paginar nada: este endpoint
+# las pide directo y ni siquiera necesita saber a que periodo pertenecen.
+
+POR_ORDEN = "/billing/integration/group/ML/order/details?order_ids=2000017972444596&limit=50"
+
+
+def test_acepta_el_detalle_por_orden(client, ml_calls):
+    res = client.get("/api/ml/billing", query_string={"resource": POR_ORDEN})
+
+    assert res.status_code == 200
+    assert ml_calls[0] == f"https://api.mercadolibre.com{POR_ORDEN}"
+
+
+def test_el_detalle_por_orden_esta_throttleado(client, ml_calls):
+    assert client.get("/api/ml/billing",
+                      query_string={"resource": POR_ORDEN}).status_code == 200
+    assert client.get("/api/ml/billing",
+                      query_string={"resource": POR_ORDEN}).status_code == 429
+    assert len(ml_calls) == 1
+
+
+def test_el_detalle_de_periodo_acepta_el_cursor_from_id(client, ml_calls):
+    """from_id es la unica paginacion que llega mas alla de 10.000."""
+    resource = ("/billing/integration/periods/key/2026-09-01/group/ML/details"
+                "?document_type=BILL&limit=1000&from_id=69328478115&sort_by=ID&order_by=ASC")
+
+    res = client.get("/api/ml/billing", query_string={"resource": resource})
+
+    assert res.status_code == 200
+    assert ml_calls[0] == f"https://api.mercadolibre.com{resource}"
+
+
+@pytest.mark.parametrize("resource", [
+    "/billing/integration/group/XX/order/details",
+    "/billing/integration/group/ML/order/details/1",
+    "/billing/integration/group/ML/order",
+])
+def test_el_detalle_por_orden_no_abre_vecinos(client, monkeypatch, resource):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: pytest.fail("No debe salir ninguna request"))
+
+    assert client.get("/api/ml/billing",
+                      query_string={"resource": resource}).status_code == 400

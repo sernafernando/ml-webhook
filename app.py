@@ -314,6 +314,11 @@ ML_BILLING_PATTERNS = (
     # lineas de detalle tiene: es contra lo que un consumidor que pagina el
     # detalle verifica que no se le escapo una pagina.
     re.compile(r"^/billing/integration/periods/key/[\w-]+/documents(?:\?[^\s]*)?$"),
+    # Cargos de ordenes puntuales, sin pasar por el periodo. El detalle de un
+    # periodo topea en 10.000 con offset y hay periodos de 22.000+ cargos, asi
+    # que mirar unas pocas ordenes por ahi obliga a paginar de mas. Este
+    # endpoint las pide directo y ni siquiera necesita saber el periodo.
+    re.compile(r"^/billing/integration/group/(?:ML|MP)/order/details(?:\?[^\s]*)?$"),
 )
 
 # El limite de ML es 5/min por cuenta. Se deja un intervalo mas holgado que

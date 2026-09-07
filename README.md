@@ -109,10 +109,11 @@ que es un proxy de lectura arbitraria y está marcado para cerrarse.
   `/orders/{id}`, `/orders/{id}/discounts`, `/shipments/{id}`,
   `/shipments/{id}/costs`, `/shipments/{id}/items` y `/packs/{id}`. Devuelve el
   cuerpo de ML tal cual y preserva su status.
-- `GET /api/ml/billing?resource=...` → facturación: períodos, documentos, detalle
-  y resumen. Throttleado a una llamada cada 15s, porque el límite de la API de
-  facturación (5/min) es **de la cuenta** y un consumidor que la llame por orden
-  deja sin facturación al resto de la app.
+- `GET /api/ml/billing?resource=...` → facturación: períodos, documentos, detalle,
+  resumen y detalle por orden (`/billing/integration/group/{ML|MP}/order/details`,
+  que no necesita el período). Throttleado a una llamada cada 15s, porque el
+  límite de la API de facturación (5/min) es **de la cuenta** y un consumidor que
+  la llame por orden deja sin facturación al resto de la app.
 - `GET /api/ml/payment?payment_id={id}` → neto liquidado y retenciones, desde
   Mercado Pago. La respuesta se **proyecta** a los montos: el pago crudo trae la
   tarjeta del comprador, su IP y sus datos de contacto.
@@ -121,6 +122,32 @@ que es un proxy de lectura arbitraria y está marcado para cerrarse.
   `/post-purchase/v1/claims/{id}`. También se **proyecta**: quedan el motivo, el
   estado, las fechas y a qué orden aplica, sin `players[]`. Los subrecursos de
   conversación (`/messages`, `/attachments`) quedan afuera a propósito.
+
+#### Paginar el detalle de facturación
+
+**`offset` topea en 10.000** (`offset + limit`), y un período puede tener más de
+22.000 cargos. Como vienen por fecha ascendente, lo que queda afuera es lo más
+reciente. Paginar así:
+
+```
+.../details?document_type=BILL&limit=1000&from_id=0&sort_by=ID&order_by=ASC
+.../details?document_type=BILL&limit=1000&from_id={last_id}&sort_by=ID&order_by=ASC
+```
+
+`from_id` toma el `last_id` que devuelve la respuesta anterior. Verificado: cero
+solapamiento entre páginas. `sort=date_desc`, `order=desc`, `search_type=scan`,
+`search_after` y `last_id` como parámetro devuelven 200 pero **se ignoran**, y
+repiten la primera página.
+
+Para mirar órdenes puntuales no hace falta paginar nada: el detalle acepta
+`order_ids` (también `item_ids`, `document_ids`, `detail_ids`), y
+`/billing/integration/group/{ML|MP}/order/details?order_ids=...` las pide sin
+siquiera saber a qué período pertenecen.
+
+> **El detalle no devuelve `paging`.** `total`, `limit`, `offset` y `last_id`
+> vienen en el nivel superior de la respuesta, junto a `results`. Un consumidor
+> que lea `paging.total` obtiene `None` siempre, y cualquier corte o chequeo de
+> completitud basado en eso queda muerto en silencio.
 
 #### Cómo se arma el neto de una venta
 

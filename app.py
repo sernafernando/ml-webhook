@@ -465,6 +465,26 @@ def proyectar_reclamo(reclamo):
     }
 
 
+_ES_PACK = re.compile(r"^/packs/\d+$")
+
+
+def sin_comprador(resource, cuerpo):
+    """Saca la clave 'buyer' del pack. Es el unico recurso de /api/ml/orders
+    cuyo cuerpo trae un bloque dedicado al comprador.
+
+    Se filtra en vez de confiar en que el consumidor no lo persista: que un dato
+    no se guarde depende de que alguien se acuerde, cada vez y en cada consumidor
+    nuevo; que no llegue, no depende de nadie. Mismo criterio que dejo players[]
+    fuera de los reclamos.
+
+    No es una proyeccion: todo lo demas del pack sale tal cual, status_detail
+    incluido, que dice QUIEN cancelo sin identificar a nadie.
+    """
+    if _ES_PACK.match(resource or "") and isinstance(cuerpo, dict):
+        return {k: v for k, v in cuerpo.items() if k != "buyer"}
+    return cuerpo
+
+
 def ml_orders_resource_permitido(resource):
     """True si el resource es uno de los tres que la ingesta puede leer."""
     return isinstance(resource, str) and any(p.match(resource) for p in ML_ORDERS_PATTERNS)
@@ -2509,7 +2529,7 @@ def ml_orders_read():
         return jsonify({"error": "no se pudo leer el recurso de ML"}), 502
 
     try:
-        return jsonify(res.json()), res.status_code
+        return jsonify(sin_comprador(resource, res.json())), res.status_code
     except Exception:
         # ML contesto algo que no es JSON (HTML de error, body vacio). El cuerpo
         # crudo no se propaga: el consumidor espera JSON.

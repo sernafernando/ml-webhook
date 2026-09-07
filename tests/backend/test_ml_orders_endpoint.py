@@ -253,3 +253,64 @@ def test_los_recursos_nuevos_no_abren_vecinos(client, monkeypatch, resource):
 
     assert client.get("/api/ml/orders",
                       query_string={"resource": resource}).status_code == 400
+
+
+# =====================================================================
+# El pack no reparte al comprador
+# =====================================================================
+# /packs/<id> es el unico recurso de esta ruta cuyo cuerpo trae una clave
+# dedicada al comprador. Se saca antes de responder: el mismo criterio que dejo
+# players[] fuera de los reclamos. Que un dato no se persista depende de que el
+# consumidor se acuerde; que no llegue, no depende de nadie.
+
+PACK_CRUDO = {
+    "id": 2000014906212865,
+    "status": "cancelled",
+    "status_detail": "buyer",
+    "orders": [{"id": 2000018325540962, "static_tags": []}],
+    "shipment": {"id": 47952444508},
+    "family_pack_id": None,
+    "trash_pack_id": None,
+    "date_created": "2026-09-07T09:16:54.000-0400",
+    "last_updated": "2026-09-07T09:21:24.000-0400",
+    "buyer": {"id": 2564836509},
+}
+
+
+def test_el_pack_no_devuelve_al_comprador(client, monkeypatch):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(payload=PACK_CRUDO))
+
+    res = client.get("/api/ml/orders",
+                     query_string={"resource": "/packs/2000014906212865"})
+    d = res.get_json()
+
+    assert "buyer" not in d
+    assert "2564836509" not in res.get_data(as_text=True)
+
+
+def test_el_pack_conserva_todo_lo_demas(client, monkeypatch):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(payload=PACK_CRUDO))
+
+    d = client.get("/api/ml/orders",
+                   query_string={"resource": "/packs/2000014906212865"}).get_json()
+
+    assert d["orders"] == [{"id": 2000018325540962, "static_tags": []}]
+    assert d["shipment"] == {"id": 47952444508}
+    # status_detail "buyer" describe QUIEN cancelo, no identifica a nadie.
+    assert d["status_detail"] == "buyer"
+    assert d["id"] == 2000014906212865
+
+
+def test_los_demas_recursos_siguen_tal_cual(client, monkeypatch):
+    """El filtro es solo para packs: el resto sigue devolviendo el cuerpo de ML
+    sin tocar."""
+    cuerpo = {"id": 1, "buyer": {"id": 99}}
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(payload=cuerpo))
+
+    d = client.get("/api/ml/orders",
+                   query_string={"resource": "/orders/2000018265495500"}).get_json()
+
+    assert d == cuerpo

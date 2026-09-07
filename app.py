@@ -315,6 +315,82 @@ _billing_lock = threading.Lock()
 _billing_last_call = 0.0
 
 
+
+# ---- Pagos de Mercado Pago: el neto liquidado y las retenciones ----
+#
+# Por que hay un segundo host aca. El neto NO existe del lado de ML: la orden
+# trae el bruto y facturacion trae lo que ML cobra. Las retenciones se aplican
+# cuando se libera la plata, o sea del lado de Mercado Pago, y con ellas el neto.
+# Verificado contra el pago 176106034911: transaction_amount 730000, cargos
+# 210830, net_received_amount 519170. Cierra exacto, y charges_details trae las
+# retenciones discriminadas CON su jurisdiccion en el nombre
+# (tax_withholding_sirtac-la_pampa), que es justo lo que no se puede calcular.
+#
+# Esto NO afloja la frontera de build_ml_api_url. Esa funcion sigue resolviendo
+# unicamente api.mercadolibre.com. Aca hay un segundo host, igual de fijo y
+# validado igual de duro: el peligro nunca fue "otro host", fue un host que
+# elige quien llama. Ninguno de los dos lo elige el consumidor.
+MP_API_HOST = "api.mercadopago.com"
+MP_API_BASE = f"https://{MP_API_HOST}"
+
+# Solo digitos. El id se interpola en la URL, asi que si aceptara texto libre
+# seria la misma via de escape que build_ml_api_url existe para cerrar.
+_MP_PAYMENT_ID = re.compile(r"^\d{1,24}$")
+
+
+def build_mp_payment_url(payment_id):
+    """Construye la URL del pago y valida el host que resolvio el parser.
+
+    Misma defensa que build_ml_api_url y por la misma razon: se valida el
+    resultado del parseo, no el string de entrada, y se devuelve la URL
+    reconstruida para que lo que se manda sea byte a byte lo que se valido.
+    """
+    if not isinstance(payment_id, str) or not _MP_PAYMENT_ID.match(payment_id):
+        return None, "payment_id debe ser un numero"
+
+    parsed = urlsplit(f"{MP_API_BASE}/v1/payments/{payment_id}")
+    if parsed.scheme != "https" or parsed.netloc != MP_API_HOST:
+        return None, f"host resuelto invalido: {parsed.netloc!r}"
+
+    return urlunsplit(parsed), None
+
+
+def proyectar_pago(pago):
+    """Deja solo los montos. El pago crudo trae la tarjeta del comprador (bin,
+    primeros seis y ultimos cuatro digitos, titular), su IP, su mail y su
+    documento. La conciliacion necesita seis numeros: el resto no se reparte.
+
+    Es la excepcion a devolver el body de ML tal cual, y es deliberada. En
+    /orders y /billing el payload es casi todo necesario; aca es casi todo
+    innecesario y una parte es dato de tarjeta.
+    """
+    pago = pago if isinstance(pago, dict) else {}
+    detalles = pago.get("transaction_details") or {}
+    orden = pago.get("order") or {}
+
+    cargos = []
+    for c in (pago.get("charges_details") or []):
+        montos = c.get("amounts") or {}
+        cargos.append({
+            "name": c.get("name"),
+            "type": c.get("type"),
+            "amount": montos.get("original"),
+            "refunded": montos.get("refunded"),
+        })
+
+    return {
+        "payment_id": pago.get("id"),
+        "order_id": orden.get("id"),
+        "status": pago.get("status"),
+        "currency_id": pago.get("currency_id"),
+        "date_approved": pago.get("date_approved"),
+        "transaction_amount": pago.get("transaction_amount"),
+        "total_paid_amount": detalles.get("total_paid_amount"),
+        "net_received_amount": detalles.get("net_received_amount"),
+        "charges_details": cargos,
+    }
+
+
 def ml_billing_resource_permitido(resource):
     return isinstance(resource, str) and any(p.match(resource) for p in ML_BILLING_PATTERNS)
 
@@ -2429,6 +2505,45 @@ def ml_billing_read():
             "error": "respuesta no-JSON de ML",
             "ml_status": res.status_code,
         }), res.status_code if res.status_code >= 400 else 502
+
+
+
+@app.route("/api/ml/payment", methods=["GET"])
+def ml_payment_read():
+    """Neto liquidado y retenciones de un pago, proyectado.
+
+    Toma payment_id (no resource): el consumidor no elige la ruta, solo el pago.
+    Es una superficie mas chica que un allowlist de recursos, y aca alcanza.
+    """
+    payment_id = request.args.get("payment_id")
+    if not payment_id:
+        return jsonify({"error": "Falta parametro payment_id"}), 400
+
+    mp_url, motivo = build_mp_payment_url(payment_id)
+    if mp_url is None:
+        print(f"\u26d4 PAYMENT ID RECHAZADO motivo={motivo} payment_id={payment_id!r}")
+        return jsonify({"error": "payment_id invalido"}), 400
+
+    try:
+        res = ml_api_get(mp_url, headers={"Authorization": f"Bearer {get_token()}"})
+    except Exception as e:
+        print(f"\u274c Error leyendo el pago {payment_id!r} de Mercado Pago:", e)
+        return jsonify({"error": "no se pudo leer el pago"}), 502
+
+    try:
+        cuerpo = res.json()
+    except Exception:
+        print(f"\u26a0\ufe0f Respuesta no-JSON de Mercado Pago status={res.status_code}")
+        return jsonify({"error": "respuesta no-JSON de Mercado Pago",
+                        "mp_status": res.status_code}), 502
+
+    if res.status_code >= 400:
+        # El cuerpo del error de MP no se propaga: puede traer eco del request.
+        print(f"\u26a0\ufe0f Pago {payment_id!r} status={res.status_code}")
+        return jsonify({"error": "Mercado Pago rechazo la lectura del pago",
+                        "mp_status": res.status_code}), res.status_code
+
+    return jsonify(proyectar_pago(cuerpo)), 200
 
 
 @app.route("/api/ml/preview", methods=["GET", "POST"])

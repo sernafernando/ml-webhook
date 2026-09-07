@@ -122,6 +122,38 @@ que es un proxy de lectura arbitraria y está marcado para cerrarse.
   estado, las fechas y a qué orden aplica, sin `players[]`. Los subrecursos de
   conversación (`/messages`, `/attachments`) quedan afuera a propósito.
 
+#### Cómo se arma el neto de una venta
+
+Verificado contra 514 pagos reales de la cuenta (487 `approved`, 20 `refunded`):
+
+```
+net_received_amount == transaction_amount + shipping_amount − Σ(cargos del vendedor)
+```
+
+Un cargo de `charges_details` **no** es del vendedor si cumple alguna de estas:
+
+| Exclusión | Por qué |
+|---|---|
+| `type == "coupon"` | lo pone ML (su `supplier` trae `meli_campaign`, y `amounts.seller` es 0) |
+| `type == "bonus"` | bonificación, no cargo |
+| `name == "financing_fee"` | lo paga el comprador — **no** confundir con `financing_add_on_fee`, que sí es del vendedor |
+| `"payer" in name` | `tax_withholding_payer-*`, retención del comprador |
+
+Para una venta devuelta, el neto efectivo es **cero**, y se verifica así:
+
+```
+transaction_amount_refunded − Σ(refunded de cargos del vendedor) == net_received_amount
+```
+
+Sin ese contraste una venta cancelada se muestra como si hubiera dejado plata:
+`net_received_amount` sigue siendo positivo en un pago `refunded`.
+
+En `/orders/{id}/discounts`, **filtrar por `type` antes de leer `amounts`**: el
+array `details` mezcla dos tipos con la misma forma y sentido opuesto.
+`type: "coupon"` lo paga ML; `type: "discount"` trae `offer_id` y es una
+promoción propia ya incluida en el `unit_price` — restarla sería contar dos
+veces el mismo descuento.
+
 > **Los clientes Python tienen que mandar un `User-Agent` explícito.**
 > Hay Cloudflare adelante y bloquea la firma `Python-urllib/*` con
 > `403 error code: 1010`. Verificado: `Python-urllib/3.14` → 403, mientras

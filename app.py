@@ -466,22 +466,39 @@ def proyectar_reclamo(reclamo):
 
 
 _ES_PACK = re.compile(r"^/packs/\d+$")
+_ES_COSTS = re.compile(r"^/shipments/\d+/costs$")
 
 
 def sin_comprador(resource, cuerpo):
-    """Saca la clave 'buyer' del pack. Es el unico recurso de /api/ml/orders
-    cuyo cuerpo trae un bloque dedicado al comprador.
+    """Saca del cuerpo los campos que identifican al comprador.
 
-    Se filtra en vez de confiar en que el consumidor no lo persista: que un dato
+    Se filtra en vez de confiar en que el consumidor no los persista: que un dato
     no se guarde depende de que alguien se acuerde, cada vez y en cada consumidor
-    nuevo; que no llegue, no depende de nadie. Mismo criterio que dejo players[]
+    nuevo; que no llegue, no depende de nadie. Mismo criterio que deja players[]
     fuera de los reclamos.
 
-    No es una proyeccion: todo lo demas del pack sale tal cual, status_detail
-    incluido, que dice QUIEN cancelo sin identificar a nadie.
+    No es una proyeccion: se saca el campo y todo lo demas sale tal cual. En el
+    pack sigue viniendo status_detail, que dice QUIEN cancelo sin identificar a
+    nadie; en los costos siguen viniendo receiver.cost y senders[].cost, que son
+    el desglose que se consume.
     """
-    if _ES_PACK.match(resource or "") and isinstance(cuerpo, dict):
+    if not isinstance(cuerpo, dict):
+        return cuerpo
+
+    resource = resource or ""
+
+    if _ES_PACK.match(resource):
         return {k: v for k, v in cuerpo.items() if k != "buyer"}
+
+    if _ES_COSTS.match(resource):
+        receiver = cuerpo.get("receiver")
+        if isinstance(receiver, dict) and "user_id" in receiver:
+            cuerpo = dict(cuerpo)
+            # Solo el user_id: el receiver es el comprador, pero su cost y sus
+            # descuentos son parte del costo del envio. El user_id de senders
+            # queda: ese somos nosotros.
+            cuerpo["receiver"] = {k: v for k, v in receiver.items() if k != "user_id"}
+
     return cuerpo
 
 

@@ -314,3 +314,56 @@ def test_los_demas_recursos_siguen_tal_cual(client, monkeypatch):
                    query_string={"resource": "/orders/2000018265495500"}).get_json()
 
     assert d == cuerpo
+
+
+# =====================================================================
+# El desglose de costos tampoco reparte al comprador
+# =====================================================================
+# /shipments/<id>/costs trae receiver.user_id, que es el comprador. Se saca solo
+# ese campo: receiver.cost queda, porque es parte del desglose y hay consumidores
+# que lo leen.
+
+COSTS_CRUDO = {
+    "gross_amount": 56330,
+    "base_exchange": None,
+    "receiver": {
+        "user_id": 657269857,
+        "cost": 0,
+        "compensation": 0,
+        "discounts": [{"promoted_amount": 25950, "rate": 1, "type": "ratio"}],
+        "save": 25950,
+    },
+    "senders": [{
+        "user_id": 413658225,
+        "cost": 15190,
+        "discounts": [{"promoted_amount": 15190, "rate": 0.5, "type": "mandatory"}],
+        "save": 15190,
+    }],
+}
+
+
+def test_costs_no_devuelve_el_user_id_del_comprador(client, monkeypatch):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(payload=COSTS_CRUDO))
+
+    res = client.get("/api/ml/orders",
+                     query_string={"resource": "/shipments/47925243368/costs"})
+
+    assert "657269857" not in res.get_data(as_text=True)
+    assert "user_id" not in res.get_json()["receiver"]
+
+
+def test_costs_conserva_el_desglose_entero(client, monkeypatch):
+    """receiver.cost y senders[].cost son lo que se consume: no se tocan."""
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(payload=COSTS_CRUDO))
+
+    d = client.get("/api/ml/orders",
+                   query_string={"resource": "/shipments/47925243368/costs"}).get_json()
+
+    assert d["receiver"]["cost"] == 0
+    assert d["receiver"]["save"] == 25950
+    assert d["senders"][0]["cost"] == 15190
+    assert d["gross_amount"] == 56330
+    # El sender somos nosotros: ese user_id no es dato de nadie mas.
+    assert d["senders"][0]["user_id"] == 413658225

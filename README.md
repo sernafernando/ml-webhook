@@ -117,6 +117,17 @@ que es un proxy de lectura arbitraria y está marcado para cerrarse.
 - `GET /api/ml/payment?payment_id={id}` → neto liquidado y retenciones, desde
   Mercado Pago. La respuesta se **proyecta** a los montos: el pago crudo trae la
   tarjeta del comprador, su IP y sus datos de contacto.
+- `GET /api/ml/activity?since={cursor}&topics=a,b&limit={n}` → qué ventas se
+  movieron. Devuelve el **hecho**, no el contenido: `topic`, `order_id`,
+  `pack_id`, `resource`, `sent` y `occurred_at`, y nada más. Ordená por `sent`
+  (lo emite ML); `occurred_at` es cuándo lo registramos y sirve para medir el
+  retraso del puente. El cursor es opaco: guardalo y devolvelo. Un cursor
+  inválido da 400 en vez de devolver todo desde cero, que haría reprocesar el
+  histórico como si fueran novedades.
+  Tópicos del puente: `orders_v2`, `payments`, `shipments`, `post_purchase`,
+  `messages`. `questions` no entra: es preventa, no tiene orden.
+  Opcionalmente avisa por un ping sin payload (`ACTIVITY_PING_URL`), que es
+  best-effort: si se pierde, el próximo pull lo levanta igual.
 - `GET /api/ml/claims?resource=...` → reclamos y devoluciones, para saber por qué
   se canceló una venta. Acepta `/post-purchase/v1/claims/search` y
   `/post-purchase/v1/claims/{id}`. También se **proyecta**: quedan el motivo, el

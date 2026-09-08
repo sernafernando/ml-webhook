@@ -542,6 +542,39 @@ def _auth_header():
     return {"Authorization": f"Bearer {get_token()}"}
 
 
+
+# Destino del ping. Inerte mientras no este configurado: nadie tiene que
+# apagarlo para que el puente funcione, porque el pull no depende de el.
+ACTIVITY_PING_URL = os.getenv("ACTIVITY_PING_URL")
+# Corto a proposito. El ping corre en el camino de una notificacion de ML y no
+# vale un solo segundo de mas: si el destino no contesta rapido, que se pierda.
+ACTIVITY_PING_TIMEOUT = (2, 3)
+
+
+def notificar_actividad(topic):
+    """Avisa que hay novedades. No manda el evento: dice "vení a buscar".
+
+    Esa asimetria es todo el diseno. El dato viaja por el canal confiable (el
+    pull con cursor) y la urgencia por el canal barato. Si el ping se pierde no
+    se pierde nada, porque el proximo pull lo levanta igual; y en cuanto alguien
+    dependa de que el ping llegue siempre, volvimos al push con sus problemas y
+    sin sus garantias.
+
+    Respeta el mismo filtro de topics que el endpoint: items y price_suggestion
+    son el grueso del volumen y no son actividad de una venta, asi que
+    despertarian el pull del consumidor para nada.
+    """
+    if not ACTIVITY_PING_URL or topic not in ACTIVITY_TOPICS:
+        return
+
+    try:
+        requests.post(ACTIVITY_PING_URL, timeout=ACTIVITY_PING_TIMEOUT)
+    except Exception as e:
+        # Best-effort de verdad: no se reintenta ni se propaga. El pull cubre
+        # el hueco sin que nadie se entere.
+        print(f"\u26a0\ufe0f Ping de actividad fallido ({topic}): {e}")
+
+
 def registrar_actividad(evento):
     """Guarda que una venta se movio. Idempotente por el _id de ML."""
     topic = evento.get("topic")
@@ -561,6 +594,8 @@ def registrar_actividad(evento):
             """,
             (evento.get("_id"), topic, resource, order_id, pack_id, evento.get("sent")),
         )
+
+    notificar_actividad(topic)
 
 
 def ml_claims_resource_permitido(resource):

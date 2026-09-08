@@ -329,3 +329,80 @@ def test_un_topic_desconocido_se_rechaza(lector):
 def test_no_acepta_post(lector):
     client, _ = lector
     assert client.post("/api/ml/activity").status_code == 405
+
+
+# =====================================================================
+# El ping: avisa que hay novedades, no las manda
+# =====================================================================
+# El dato viaja por el canal confiable (el pull con cursor); la urgencia, por el
+# canal barato. Si el ping se pierde, no se pierde nada: el proximo pull lo
+# levanta igual. En cuanto alguien dependa de que el ping llegue siempre,
+# volvimos al push con sus problemas y sin sus garantias.
+
+def test_sin_destino_configurado_no_intenta_nada(monkeypatch):
+    """Por defecto el ping esta inerte: nadie tiene que apagarlo."""
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", None)
+    monkeypatch.setattr(app_module.requests, "post",
+                        lambda *a, **k: pytest.fail("No debe salir ninguna request"))
+
+    app_module.notificar_actividad("orders_v2")
+
+
+def test_avisa_al_destino_configurado(monkeypatch):
+    llamadas = []
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/interno/ping")
+    monkeypatch.setattr(app_module.requests, "post",
+                        lambda url, **kw: llamadas.append((url, kw)) or _Resp({}))
+
+    app_module.notificar_actividad("orders_v2")
+
+    assert llamadas[0][0] == "https://pricing/interno/ping"
+    # Timeout obligatorio: un destino colgado no puede quedarse con el hilo.
+    assert llamadas[0][1].get("timeout") is not None
+
+
+def test_el_ping_no_lleva_datos(monkeypatch):
+    """Solo dice 'vení a buscar'. Si llevara el evento, seria un push y habria
+    que garantizar la entrega."""
+    llamadas = []
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/interno/ping")
+    monkeypatch.setattr(app_module.requests, "post",
+                        lambda url, **kw: llamadas.append(kw) or _Resp({}))
+
+    app_module.notificar_actividad("messages")
+
+    kw = llamadas[0]
+    assert not kw.get("json") and not kw.get("data")
+
+
+def test_si_el_destino_esta_caido_no_pasa_nada(monkeypatch):
+    """Best-effort de verdad: la excepcion no sube."""
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/interno/ping")
+
+    def _boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(app_module.requests, "post", _boom)
+
+    app_module.notificar_actividad("orders_v2")
+
+
+@pytest.mark.parametrize("topic", ["items", "price_suggestion", "public_offers"])
+def test_los_topics_de_catalogo_no_disparan_el_ping(monkeypatch, topic):
+    """items y price_suggestion son el grueso del volumen y no son actividad de
+    una venta: despertarian el pull para nada."""
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/interno/ping")
+    monkeypatch.setattr(app_module.requests, "post",
+                        lambda *a, **k: pytest.fail("No debe salir ninguna request"))
+
+    app_module.notificar_actividad(topic)
+
+
+def test_el_ping_sale_al_registrar_actividad(entorno, monkeypatch):
+    avisados = []
+    monkeypatch.setattr(app_module, "notificar_actividad", lambda t: avisados.append(t))
+    client, _ = entorno
+
+    client.post("/webhook", json=_evento("orders_v2", "/orders/1"))
+
+    assert avisados == ["orders_v2"]

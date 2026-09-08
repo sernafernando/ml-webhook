@@ -445,6 +445,124 @@ ML_CLAIMS_PATTERNS = (
 )
 
 
+
+# =============================================================
+# Puente de actividad hacia los consumidores
+# =============================================================
+# La vista de ventas de pricing-app ordena por "ultima actividad", y ese dato no
+# existe del lado de la orden: date_last_updated se mueve cuando cambia la orden,
+# no cuando llega un mensaje del comprador o se abre un reclamo. Solo el webhook
+# se entera de que algo paso.
+#
+# Lo que cruza el puente es el HECHO, no el contenido. Resolver el vinculo del
+# lado del consumidor lo obligaria a pedirnos los recursos que lo resuelven, y
+# esos traen la direccion del comprador (/shipments/<id>.receiver_address) y el
+# texto de las conversaciones (/messages/<uuid>): seria repartir todo eso para
+# que el otro extraiga un id y tire el resto. Se resuelve aca y afuera sale un
+# id, un tipo y una fecha.
+#
+# Solo estos topics. De los 18 que llegan, items solo ya son 4,3 millones de
+# eventos y ninguno es actividad de una venta.
+ACTIVITY_TOPICS = ("orders_v2", "payments", "shipments", "post_purchase", "messages")
+
+_ID_EN_PATH = re.compile(r"^/[a-z0-9\-/]*?(\d+)$", re.IGNORECASE)
+
+
+def _id_final(resource):
+    m = _ID_EN_PATH.match(resource or "")
+    return int(m.group(1)) if m else None
+
+
+def resolver_vinculo_actividad(topic, resource):
+    """Devuelve (order_id, pack_id) para un evento, o (None, None).
+
+    Best-effort a proposito: si ML no responde, el evento se registra igual sin
+    vinculo. Un evento sin resolver se puede completar despues; uno perdido, no.
+    """
+    try:
+        if topic == "orders_v2":
+            # El unico que no cuesta una llamada: el id esta en el path.
+            return _id_final(resource), None
+
+        if topic == "shipments":
+            envio_id = _id_final(resource)
+            if envio_id is None:
+                return None, None
+            url, _ = build_ml_api_url(f"/shipments/{envio_id}")
+            datos = ml_api_get(url, headers=_auth_header()).json()
+            return datos.get("order_id"), None
+
+        if topic == "post_purchase":
+            claim_id = _id_final(resource)
+            if claim_id is None:
+                return None, None
+            url, _ = build_ml_api_url(f"/post-purchase/v1/claims/{claim_id}")
+            datos = ml_api_get(url, headers=_auth_header()).json()
+            # Un reclamo puede colgar de otra cosa que no sea una orden.
+            if datos.get("resource") == "order":
+                return datos.get("resource_id"), None
+            return None, None
+
+        if topic == "payments":
+            # ML manda /collections/<id>, pero el pago vive en Mercado Pago.
+            pago_id = _id_final(resource)
+            if pago_id is None:
+                return None, None
+            url, motivo = build_mp_payment_url(str(pago_id))
+            if url is None:
+                return None, None
+            datos = ml_api_get(url, headers=_auth_header()).json()
+            return (datos.get("order") or {}).get("id"), None
+
+        if topic == "messages":
+            # El resource es un UUID crudo, sin path. El tag es obligatorio: sin
+            # el, ML responde 404. message_resources da el PACK, no la orden, y
+            # con eso alcanza porque la vista agrupa por pack.
+            if not resource:
+                return None, None
+            url, motivo = build_ml_api_url(f"/messages/{resource}?tag=post_sale")
+            if url is None:
+                return None, None
+            datos = ml_api_get(url, headers=_auth_header()).json()
+            mensajes = datos.get("messages") or []
+            for recurso in (mensajes[0].get("message_resources") or []) if mensajes else []:
+                if recurso.get("name") == "packs":
+                    return None, int(recurso["id"])
+            return None, None
+
+    except Exception as e:
+        print(f"\u26a0\ufe0f No se pudo resolver el vinculo de {topic} {resource!r}: {e}")
+
+    # questions cae aca sin gastar una llamada: es preventa, tiene item_id y
+    # ninguna orden, asi que preguntarle a ML seria buscar lo que no existe.
+    return None, None
+
+
+def _auth_header():
+    return {"Authorization": f"Bearer {get_token()}"}
+
+
+def registrar_actividad(evento):
+    """Guarda que una venta se movio. Idempotente por el _id de ML."""
+    topic = evento.get("topic")
+    if topic not in ACTIVITY_TOPICS:
+        return
+
+    resource = evento.get("resource") or ""
+    order_id, pack_id = resolver_vinculo_actividad(topic, resource)
+
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO ml_activity
+                (webhook_id, topic, resource, order_id, pack_id, sent, occurred_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (webhook_id) DO NOTHING
+            """,
+            (evento.get("_id"), topic, resource, order_id, pack_id, evento.get("sent")),
+        )
+
+
 def ml_claims_resource_permitido(resource):
     return isinstance(resource, str) and any(p.match(resource) for p in ML_CLAIMS_PATTERNS)
 
@@ -2175,6 +2293,14 @@ def webhook():
         except Exception as e:
             results["errors"].append(f"insert_original: {e}")
 
+        # Marcar la actividad para los consumidores. Envuelto aparte: perder una
+        # fila de actividad es recuperable, pero no contestarle 200 a ML hace que
+        # reintente, y sus reintentos tienen limite.
+        try:
+            registrar_actividad(evento)
+        except Exception as e:
+            results["errors"].append(f"registrar_actividad: {e}")
+
         # Refrescar preview del MISMO resource (no rompe el webhook si falla)
         try:
             if resource.startswith("/seller-promotions/"):
@@ -2703,6 +2829,97 @@ def ml_claims_read():
         }), 200
 
     return jsonify(proyectar_reclamo(cuerpo)), 200
+
+
+
+def _encode_activity_cursor(ultimo_id):
+    """Opaco a proposito: el consumidor lo guarda y lo devuelve, no lo lee. Si
+    manana el almacenamiento cambia, el cursor cambia de contenido y nadie se
+    entera."""
+    return base64.urlsafe_b64encode(f"a1|{int(ultimo_id)}".encode("utf-8")).decode("ascii")
+
+
+def _decode_activity_cursor(cursor):
+    version, _, crudo = base64.urlsafe_b64decode(cursor.encode("utf-8")).decode("utf-8").partition("|")
+    if version != "a1":
+        raise ValueError("version de cursor desconocida")
+    return int(crudo)
+
+
+@app.route("/api/ml/activity", methods=["GET"])
+def ml_activity_read():
+    """Que ventas se movieron, desde el cursor del consumidor.
+
+    Devuelve el HECHO y nada mas: topic, a que venta aplica, cuando lo emitio ML
+    y cuando lo registramos. Sin texto de mensajes, sin direcciones, sin datos
+    del comprador.
+    """
+    since = request.args.get("since")
+    ultimo_id = 0
+    if since:
+        try:
+            ultimo_id = _decode_activity_cursor(since)
+        except Exception:
+            # No se devuelve todo desde cero: el consumidor reprocesaria el
+            # historico entero creyendo que son novedades.
+            return jsonify({"error": "cursor invalido"}), 400
+
+    topics = None
+    crudo = request.args.get("topics")
+    if crudo:
+        topics = [t.strip() for t in crudo.split(",") if t.strip()]
+        desconocidos = [t for t in topics if t not in ACTIVITY_TOPICS]
+        if desconocidos:
+            return jsonify({
+                "error": "topic no disponible en el puente",
+                "topics_disponibles": list(ACTIVITY_TOPICS),
+            }), 400
+
+    limit = _clamp_limit(request.args.get("limit"))
+
+    condiciones = ["id > %s"]
+    params = [ultimo_id]
+    if topics:
+        condiciones.append("topic = ANY(%s)")
+        params.append(topics)
+
+    consulta = f"""
+        SELECT id, topic, resource, order_id, pack_id, sent, occurred_at
+        FROM ml_activity
+        WHERE {' AND '.join(condiciones)}
+        ORDER BY id ASC
+        LIMIT %s
+    """
+    params.append(limit)
+
+    try:
+        with db_cursor() as cur:
+            cur.execute(consulta, tuple(params))
+            filas = cur.fetchall()
+    except Exception as e:
+        print("\u274c Error leyendo actividad:", e)
+        return jsonify({"error": "no se pudo leer la actividad"}), 500
+
+    eventos = []
+    for fila in filas:
+        _id, topic, resource, order_id, pack_id, sent, occurred_at = fila
+        eventos.append({
+            "topic": topic,
+            "order_id": order_id,
+            "pack_id": pack_id,
+            "resource": resource,
+            # sent lo emite ML: es contra esto que el consumidor ordena y aplica
+            # su guarda de secuencia. occurred_at es cuando lo registramos, y
+            # sirve para auditar el retraso del puente, no para ordenar.
+            "sent": sent,
+            "occurred_at": occurred_at.isoformat() if hasattr(occurred_at, "isoformat") else occurred_at,
+        })
+
+    return jsonify({
+        "events": eventos,
+        "next_cursor": _encode_activity_cursor(filas[-1][0]) if filas else since,
+        "has_more": len(filas) == limit,
+    })
 
 
 @app.route("/api/ml/preview", methods=["GET", "POST"])

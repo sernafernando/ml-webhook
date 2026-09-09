@@ -546,6 +546,11 @@ def _auth_header():
 # Destino del ping. Inerte mientras no este configurado: nadie tiene que
 # apagarlo para que el puente funcione, porque el pull no depende de el.
 ACTIVITY_PING_URL = os.getenv("ACTIVITY_PING_URL")
+# El receptor exige autenticacion. Sin token el ping sale igual pero sin header,
+# y ahi esta la trampa: requests NO levanta excepcion ante un 401, asi que el
+# ping rechazado no falla, simplemente no hace nada, en silencio. Por eso
+# tambien se mira el status de la respuesta mas abajo.
+ACTIVITY_PING_TOKEN = os.getenv("ACTIVITY_PING_TOKEN")
 # Corto a proposito. El ping corre en el camino de una notificacion de ML y no
 # vale un solo segundo de mas: si el destino no contesta rapido, que se pierda.
 ACTIVITY_PING_TIMEOUT = (2, 3)
@@ -567,8 +572,15 @@ def notificar_actividad(topic):
     if not ACTIVITY_PING_URL or topic not in ACTIVITY_TOPICS:
         return
 
+    # Sin token no se manda el header: un "Bearer " pelado es peor que nada,
+    # porque parece configurado y falla igual.
+    headers = {"Authorization": f"Bearer {ACTIVITY_PING_TOKEN}"} if ACTIVITY_PING_TOKEN else {}
+
     try:
-        requests.post(ACTIVITY_PING_URL, timeout=ACTIVITY_PING_TIMEOUT)
+        res = requests.post(ACTIVITY_PING_URL, headers=headers, timeout=ACTIVITY_PING_TIMEOUT)
+        if res.status_code >= 400:
+            # El token nunca va al log.
+            print(f"\u26a0\ufe0f Ping de actividad rechazado ({topic}): status={res.status_code}")
     except Exception as e:
         # Best-effort de verdad: no se reintenta ni se propaga. El pull cubre
         # el hueco sin que nadie se entere.

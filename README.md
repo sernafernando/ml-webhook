@@ -126,8 +126,11 @@ que es un proxy de lectura arbitraria y está marcado para cerrarse.
   histórico como si fueran novedades.
   Tópicos del puente: `orders_v2`, `payments`, `shipments`, `post_purchase`,
   `messages`. `questions` no entra: es preventa, no tiene orden.
-  Opcionalmente avisa por un ping sin payload (`ACTIVITY_PING_URL`), que es
-  best-effort: si se pierde, el próximo pull lo levanta igual.
+  Opcionalmente avisa por un ping sin payload, que es best-effort: si se pierde,
+  el próximo pull lo levanta igual. Se configura con `ACTIVITY_PING_URL` y
+  `ACTIVITY_PING_TOKEN`; el token viaja como `Authorization: Bearer <token>` y
+  sin él no se manda el header. Las dos se leen del `.env` vía `load_dotenv()`,
+  así que **hay que reiniciar el servicio** para que las tome.
 - `GET /api/ml/claims?resource=...` → reclamos y devoluciones, para saber por qué
   se canceló una venta. Acepta `/post-purchase/v1/claims/search` y
   `/post-purchase/v1/claims/{id}`. También se **proyecta**: quedan el motivo, el

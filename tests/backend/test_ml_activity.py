@@ -406,3 +406,73 @@ def test_el_ping_sale_al_registrar_actividad(entorno, monkeypatch):
     client.post("/webhook", json=_evento("orders_v2", "/orders/1"))
 
     assert avisados == ["orders_v2"]
+
+
+# =====================================================================
+# El ping se autentica contra el receptor
+# =====================================================================
+# El receptor exige Bearer y responde 401 sin el. Y requests NO levanta
+# excepcion ante un 401, asi que un ping sin token no falla: no pasa nada, en
+# silencio absoluto. Por eso ademas se mira el status de la respuesta.
+
+def test_manda_el_token_como_bearer(monkeypatch):
+    llamadas = []
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/interno/ping")
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_TOKEN", "TOKEN-DEL-PUENTE")
+    monkeypatch.setattr(app_module.requests, "post",
+                        lambda url, **kw: llamadas.append(kw) or _Resp({}))
+
+    app_module.notificar_actividad("orders_v2")
+
+    assert llamadas[0]["headers"]["Authorization"] == "Bearer TOKEN-DEL-PUENTE"
+
+
+def test_sin_token_no_manda_header_vacio(monkeypatch):
+    """Un 'Bearer ' pelado es peor que no mandar nada: parece configurado."""
+    llamadas = []
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/interno/ping")
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_TOKEN", None)
+    monkeypatch.setattr(app_module.requests, "post",
+                        lambda url, **kw: llamadas.append(kw) or _Resp({}))
+
+    app_module.notificar_actividad("orders_v2")
+
+    assert "Authorization" not in (llamadas[0].get("headers") or {})
+
+
+def test_el_token_no_se_loguea(monkeypatch, capsys):
+    """Un 401 se avisa, pero el secreto no va al log."""
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/interno/ping")
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_TOKEN", "TOKEN-SECRETO-DEL-PUENTE")
+    monkeypatch.setattr(app_module.requests, "post",
+                        lambda url, **kw: _Resp({}, status_code=401))
+
+    app_module.notificar_actividad("orders_v2")
+
+    salida = capsys.readouterr().out
+    assert "TOKEN-SECRETO-DEL-PUENTE" not in salida
+
+
+def test_un_rechazo_del_receptor_se_avisa(monkeypatch, capsys):
+    """requests no levanta excepcion ante un 401: sin este chequeo, un ping
+    rechazado falla en silencio y nadie se entera hasta que alguien mira por que
+    la vista no se actualiza."""
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/interno/ping")
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_TOKEN", "T")
+    monkeypatch.setattr(app_module.requests, "post",
+                        lambda url, **kw: _Resp({}, status_code=401))
+
+    app_module.notificar_actividad("orders_v2")
+
+    assert "401" in capsys.readouterr().out
+
+
+def test_un_ping_aceptado_no_ensucia_el_log(monkeypatch, capsys):
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/interno/ping")
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_TOKEN", "T")
+    monkeypatch.setattr(app_module.requests, "post",
+                        lambda url, **kw: _Resp({}, status_code=202))
+
+    app_module.notificar_actividad("orders_v2")
+
+    assert capsys.readouterr().out == ""

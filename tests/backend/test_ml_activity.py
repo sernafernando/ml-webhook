@@ -476,3 +476,72 @@ def test_un_ping_aceptado_no_ensucia_el_log(monkeypatch, capsys):
     app_module.notificar_actividad("orders_v2")
 
     assert capsys.readouterr().out == ""
+
+
+# =====================================================================
+# Reclamos: subrecursos y reclamos que cuelgan de un envio
+# =====================================================================
+# Medido en produccion: de 366 eventos post_purchase, 171 quedaban sin vinculo.
+# 116 porque el resource traia un subrecurso (/actions-history) y el id no se
+# extraia; 55 porque el reclamo colgaba de un shipment y no de una orden. Los
+# segundos son cancel_purchase: cancelaciones, justo lo que la vista necesita.
+
+def test_un_subrecurso_del_reclamo_igual_resuelve(monkeypatch):
+    """El webhook manda /claims/<id>/actions-history, no solo /claims/<id>."""
+    urls = []
+
+    def _fake(url, **kw):
+        urls.append(url)
+        return _Resp({"resource": "order", "resource_id": 2000018128435014})
+
+    monkeypatch.setattr(app_module, "ml_api_get", _fake)
+
+    assert app_module.resolver_vinculo_actividad(
+        "post_purchase",
+        "/post-purchase/v1/claims/5572853950/actions-history") == (2000018128435014, None)
+    # Se consulta el reclamo, no el subrecurso.
+    assert urls[0].endswith("/post-purchase/v1/claims/5572853950")
+
+
+def test_un_reclamo_sobre_un_envio_resuelve_la_orden_del_envio(monkeypatch):
+    """resource == "shipment" no es un callejon sin salida: el envio sabe de que
+    orden es, y un cancel_purchase sobre un envio es una venta cancelada."""
+    respuestas = [
+        _Resp({"resource": "shipment", "resource_id": 47964778863,
+               "type": "cancel_purchase"}),
+        _Resp({"id": 47964778863, "order_id": 2000018351022748}),
+    ]
+    urls = []
+
+    def _fake(url, **kw):
+        urls.append(url)
+        return respuestas[len(urls) - 1]
+
+    monkeypatch.setattr(app_module, "ml_api_get", _fake)
+
+    assert app_module.resolver_vinculo_actividad(
+        "post_purchase", "/post-purchase/v1/claims/5573584004") == (2000018351022748, None)
+    assert urls[1].endswith("/shipments/47964778863")
+
+
+def test_un_reclamo_sobre_otra_cosa_no_inventa_vinculo(monkeypatch):
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp({"resource": "item", "resource_id": 123}))
+
+    assert app_module.resolver_vinculo_actividad(
+        "post_purchase", "/post-purchase/v1/claims/1") == (None, None)
+
+
+def test_si_el_envio_del_reclamo_falla_no_se_pierde_el_evento(monkeypatch):
+    llamadas = []
+
+    def _fake(url, **kw):
+        llamadas.append(url)
+        if len(llamadas) == 1:
+            return _Resp({"resource": "shipment", "resource_id": 47})
+        raise RuntimeError("ML no responde")
+
+    monkeypatch.setattr(app_module, "ml_api_get", _fake)
+
+    assert app_module.resolver_vinculo_actividad(
+        "post_purchase", "/post-purchase/v1/claims/1") == (None, None)

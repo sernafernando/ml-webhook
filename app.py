@@ -493,14 +493,30 @@ def resolver_vinculo_actividad(topic, resource):
             return datos.get("order_id"), None
 
         if topic == "post_purchase":
-            claim_id = _id_final(resource)
-            if claim_id is None:
+            # El webhook manda tanto /claims/<id> como subrecursos suyos
+            # (/actions-history), asi que el id se saca del segmento que sigue a
+            # "claims" y no del final del path.
+            m = re.search(r"/claims/(\d+)", resource or "")
+            if not m:
                 return None, None
+            claim_id = m.group(1)
             url, _ = build_ml_api_url(f"/post-purchase/v1/claims/{claim_id}")
             datos = ml_api_get(url, headers=_auth_header()).json()
-            # Un reclamo puede colgar de otra cosa que no sea una orden.
+
             if datos.get("resource") == "order":
                 return datos.get("resource_id"), None
+
+            if datos.get("resource") == "shipment":
+                # No es un callejon sin salida: el envio sabe de que orden es, y
+                # un reclamo sobre un envio (cancel_purchase) es una venta
+                # cancelada, justo lo que la vista necesita marcar.
+                envio_id = datos.get("resource_id")
+                if envio_id is None:
+                    return None, None
+                url, _ = build_ml_api_url(f"/shipments/{envio_id}")
+                envio = ml_api_get(url, headers=_auth_header()).json()
+                return envio.get("order_id"), None
+
             return None, None
 
         if topic == "payments":

@@ -2895,6 +2895,54 @@ def ml_claims_read():
 
 
 
+
+def backfill_vinculos_actividad(aplicar=False, limite=None):
+    """Completa el order_id/pack_id de los eventos que quedaron sin vinculo.
+
+    Es un UPDATE EN SU LUGAR: mismo id, mismo occurred_at, mismo orden. No
+    inserta ni borra nada. Eso importa porque los consumidores guardan el cursor
+    entre corridas: reinsertar un evento por delante del cursor de alguien se lo
+    haria perder, y reordenar el feed le haria re-drenar de mas.
+
+    No escribe salvo que se lo pidan (aplicar=True): un backfill que corre solo
+    por invocarlo es una trampa. Y una fila que sigue sin resolver no se toca,
+    porque escribir NULL sobre NULL solo gasta una escritura.
+    """
+    condiciones = "order_id IS NULL AND pack_id IS NULL AND topic = ANY(%s)"
+    consulta = f"""
+        SELECT id, topic, resource
+        FROM ml_activity
+        WHERE {condiciones}
+        ORDER BY id ASC
+        LIMIT %s
+    """
+    params = [list(ACTIVITY_TOPICS), limite if limite else 100000]
+
+    resumen = {"revisados": 0, "resueltos": 0, "sin_resolver": 0, "aplicado": bool(aplicar)}
+
+    with db_cursor() as cur:
+        cur.execute(consulta, tuple(params))
+        pendientes = cur.fetchall()
+
+        for fila in pendientes:
+            _id, topic, resource = fila
+            resumen["revisados"] += 1
+            order_id, pack_id = resolver_vinculo_actividad(topic, resource)
+
+            if order_id is None and pack_id is None:
+                resumen["sin_resolver"] += 1
+                continue
+
+            resumen["resueltos"] += 1
+            if aplicar:
+                cur.execute(
+                    "UPDATE ml_activity SET order_id = %s, pack_id = %s WHERE id = %s",
+                    (order_id, pack_id, _id),
+                )
+
+    return resumen
+
+
 def _encode_activity_cursor(ultimo_id):
     """Opaco a proposito: el consumidor lo guarda y lo devuelve, no lo lee. Si
     manana el almacenamiento cambia, el cursor cambia de contenido y nadie se

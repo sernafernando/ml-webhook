@@ -545,3 +545,101 @@ def test_si_el_envio_del_reclamo_falla_no_se_pierde_el_evento(monkeypatch):
 
     assert app_module.resolver_vinculo_actividad(
         "post_purchase", "/post-purchase/v1/claims/1") == (None, None)
+
+
+# =====================================================================
+# Backfill de vinculos: completa lo viejo SIN mover el feed
+# =====================================================================
+# Los eventos que quedaron sin vinculo por el bug de claims siguen en la tabla.
+# Reprocesarlos tiene que ser un UPDATE en su lugar: mismo id, mismo orden. Si
+# insertara o reordenara, los cursores que los consumidores ya guardaron se
+# romperian — o peor, les haria re-drenar de mas.
+
+class _CursorBackfill(_Cursor):
+    def execute(self, query, params=None):
+        q = " ".join(query.split())
+        self.db.setdefault("sql", []).append((q, params))
+        if q.startswith("SELECT") and "FROM ml_activity" in q:
+            self._result = self.db["pendientes"]
+        elif "UPDATE ml_activity" in q:
+            self.db.setdefault("updates", []).append(params)
+            self.rowcount = 1
+
+
+@pytest.fixture
+def backfill_env(monkeypatch):
+    db = {
+        "pendientes": [
+            (11, "post_purchase", "/post-purchase/v1/claims/5572853950/actions-history"),
+            (12, "post_purchase", "/post-purchase/v1/claims/5573584004"),
+        ],
+        "updates": [],
+        "sql": [],
+    }
+
+    @contextmanager
+    def fake_db_cursor():
+        yield _CursorBackfill(db)
+
+    monkeypatch.setattr(app_module, "db_cursor", fake_db_cursor)
+    return db
+
+
+def test_el_backfill_completa_los_vinculos_que_faltaban(backfill_env, monkeypatch):
+    monkeypatch.setattr(app_module, "resolver_vinculo_actividad",
+                        lambda t, r: (2000018351022748, None))
+
+    resumen = app_module.backfill_vinculos_actividad(aplicar=True)
+
+    assert resumen["resueltos"] == 2
+    assert len(backfill_env["updates"]) == 2
+
+
+def test_el_backfill_actualiza_en_su_lugar_y_no_mueve_el_feed(backfill_env, monkeypatch):
+    """Ningun INSERT, ningun DELETE, y el id no se toca: los cursores que los
+    consumidores ya guardaron siguen siendo validos."""
+    monkeypatch.setattr(app_module, "resolver_vinculo_actividad",
+                        lambda t, r: (2000018351022748, None))
+
+    app_module.backfill_vinculos_actividad(aplicar=True)
+
+    sentencias = " ".join(q for q, _ in backfill_env["sql"])
+    assert "INSERT" not in sentencias
+    assert "DELETE" not in sentencias
+    # El UPDATE se ancla por id y no lo modifica.
+    updates = [q for q, _ in backfill_env["sql"] if "UPDATE ml_activity" in q]
+    assert all("WHERE id = %s" in q for q in updates)
+    assert all("occurred_at" not in q for q in updates)
+
+
+def test_por_defecto_no_escribe_nada(backfill_env, monkeypatch):
+    """Un backfill que corre solo por invocarlo es una trampa: hay que pedirlo."""
+    monkeypatch.setattr(app_module, "resolver_vinculo_actividad",
+                        lambda t, r: (123, None))
+
+    resumen = app_module.backfill_vinculos_actividad()
+
+    assert backfill_env["updates"] == []
+    assert resumen["resueltos"] == 2
+    assert resumen["aplicado"] is False
+
+
+def test_lo_que_sigue_sin_resolver_no_se_toca(backfill_env, monkeypatch):
+    """Escribir NULL sobre NULL solo gasta una escritura y ensucia el diff."""
+    monkeypatch.setattr(app_module, "resolver_vinculo_actividad",
+                        lambda t, r: (None, None))
+
+    resumen = app_module.backfill_vinculos_actividad(aplicar=True)
+
+    assert backfill_env["updates"] == []
+    assert resumen["sin_resolver"] == 2
+
+
+def test_respeta_un_limite(backfill_env, monkeypatch):
+    monkeypatch.setattr(app_module, "resolver_vinculo_actividad",
+                        lambda t, r: (1, None))
+
+    app_module.backfill_vinculos_actividad(aplicar=True, limite=1)
+
+    _, params = backfill_env["sql"][0]
+    assert params[-1] == 1

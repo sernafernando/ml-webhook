@@ -126,6 +126,10 @@ que es un proxy de lectura arbitraria y está marcado para cerrarse.
   histórico como si fueran novedades.
   Tópicos del puente: `orders_v2`, `payments`, `shipments`, `post_purchase`,
   `messages`. `questions` no entra: es preventa, no tiene orden.
+  `backfill_activity_links.py` completa el vínculo de eventos viejos que quedaron
+  sin él (simulacro por defecto, `--aplicar` para escribir). Actualiza en su
+  lugar: no inserta, no borra y no reordena, así que los cursores que los
+  consumidores ya guardaron siguen siendo válidos.
   Opcionalmente avisa por un ping sin payload, que es best-effort: si se pierde,
   el próximo pull lo levanta igual. Se configura con `ACTIVITY_PING_URL` y
   `ACTIVITY_PING_TOKEN`; el token viaja como `Authorization: Bearer <token>` y

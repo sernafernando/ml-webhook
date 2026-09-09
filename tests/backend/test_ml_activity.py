@@ -643,3 +643,94 @@ def test_respeta_un_limite(backfill_env, monkeypatch):
 
     _, params = backfill_env["sql"][0]
     assert params[-1] == 1
+
+
+
+# =====================================================================
+# El backfill no se queda con la conexion mientras habla con ML
+# =====================================================================
+# Resolver 1.000 eventos son minutos de llamadas HTTP. Hacerlas con el cursor de
+# base abierto le saca una conexion al pool todo ese rato, y del lado del que lo
+# corre parece colgado. Se lee, se cierra, se resuelve, se escribe.
+
+def test_no_habla_con_ml_con_la_conexion_abierta(monkeypatch):
+    abierto = {"ahora": False}
+    vistos = []
+
+    class _C(_Cursor):
+        def execute(self, query, params=None):
+            q = " ".join(query.split())
+            if q.startswith("SELECT") and "FROM ml_activity" in q:
+                self._result = [(11, "post_purchase", "/post-purchase/v1/claims/1")]
+            elif "UPDATE ml_activity" in q:
+                self.db.setdefault("updates", []).append(params)
+
+    @contextmanager
+    def fake_db_cursor():
+        abierto["ahora"] = True
+        try:
+            yield _C({"updates": []})
+        finally:
+            abierto["ahora"] = False
+
+    def _resolver(topic, resource):
+        vistos.append(abierto["ahora"])
+        return (123, None)
+
+    monkeypatch.setattr(app_module, "db_cursor", fake_db_cursor)
+    monkeypatch.setattr(app_module, "resolver_vinculo_actividad", _resolver)
+
+    app_module.backfill_vinculos_actividad(aplicar=True)
+
+    assert vistos == [False], "se resolvio con la conexion tomada"
+
+
+def test_informa_el_progreso(monkeypatch):
+    """Sin esto, 1.000 eventos son minutos de silencio y parece colgado."""
+    avisos = []
+
+    class _C(_Cursor):
+        def execute(self, query, params=None):
+            q = " ".join(query.split())
+            if q.startswith("SELECT") and "FROM ml_activity" in q:
+                self._result = [(i, "post_purchase", f"/post-purchase/v1/claims/{i}")
+                                for i in range(1, 6)]
+
+    @contextmanager
+    def fake_db_cursor():
+        yield _C({})
+
+    monkeypatch.setattr(app_module, "db_cursor", fake_db_cursor)
+    monkeypatch.setattr(app_module, "resolver_vinculo_actividad", lambda t, r: (1, None))
+
+    app_module.backfill_vinculos_actividad(progreso=avisos.append)
+
+    assert len(avisos) == 5
+    assert avisos[0]["revisados"] == 1
+
+
+def test_se_puede_acotar_a_un_topic(monkeypatch):
+    """De los pendientes reales, la mayoria son pagos que NUNCA van a resolver
+    (bonificaciones de ML, sin orden). Poder correr solo los reclamos evita
+    gastar cientos de llamadas para nada."""
+    consultas = []
+
+    class _C(_Cursor):
+        def execute(self, query, params=None):
+            consultas.append((" ".join(query.split()), params))
+            self._result = []
+
+    @contextmanager
+    def fake_db_cursor():
+        yield _C({})
+
+    monkeypatch.setattr(app_module, "db_cursor", fake_db_cursor)
+
+    app_module.backfill_vinculos_actividad(topics=["post_purchase"])
+
+    assert consultas[0][1][0] == ["post_purchase"]
+
+
+def test_un_topic_fuera_del_puente_se_rechaza(monkeypatch):
+    with pytest.raises(ValueError):
+        app_module.backfill_vinculos_actividad(topics=["items"])

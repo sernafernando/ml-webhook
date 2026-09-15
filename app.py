@@ -4052,8 +4052,20 @@ def reconcile_item_promotions(mla):
     res = _promos_api_get(f"/seller-promotions/items/{mla}")
     if res.status_code != 200:
         print(f"⚠️ reconcile promos {mla} -> ML {res.status_code}")
+        # El motivo se guarda aparte para que quien lo necesite lo lea, sin
+        # cambiar el booleano: worker_promos.py hace `if reconcile(...)`.
+        try:
+            cuerpo = res.json()
+        except Exception:
+            cuerpo = {}
+        reconcile_item_promotions.ultimo_error = {
+            "ml_status": res.status_code,
+            "reason": (cuerpo.get("message") if isinstance(cuerpo, dict) else None)
+                      or f"ML respondio {res.status_code}",
+        }
         return False
     data = res.json()
+    reconcile_item_promotions.ultimo_error = None
     _persist_item_promos(mla, data)
     if isinstance(data, list) and data:
         current = [k for k in ((e.get("id") or e.get("type")) for e in data if isinstance(e, dict)) if k]
@@ -4261,8 +4273,32 @@ def api_promociones_refresh(mla):
     Reusa reconcile_item_promotions: GET live /seller-promotions/items/{mla} +
     upsert + close-set (baja 'started' huerfanos a 'finished'). Idempotente."""
     try:
+        reconcile_item_promotions.ultimo_error = None
         ok = reconcile_item_promotions(mla)
-        return jsonify({"mla": mla, "refreshed": ok}), (200 if ok else 502)
+        if ok:
+            return jsonify({"mla": mla, "refreshed": True}), 200
+
+        detalle = getattr(reconcile_item_promotions, "ultimo_error", None) or {}
+        ml_status = detalle.get("ml_status")
+        cuerpo = {
+            "mla": mla,
+            "refreshed": False,
+            "reason": detalle.get("reason", "no se pudo refrescar"),
+            "ml_status": ml_status,
+        }
+
+        # Un 4xx de ML es una condicion del ITEM (por ejemplo, publicacion
+        # cerrada): permanente, no se arregla reintentando, y el consumidor
+        # tiene que poder decir por que. Devolverlo como 502 lo hacia
+        # indistinguible de "el proxy se cayo" — y peor: Cloudflare reemplaza
+        # el cuerpo de un 5xx del origen por su propia pagina, asi que este
+        # JSON ni siquiera llegaba.
+        if isinstance(ml_status, int) and 400 <= ml_status < 500:
+            return jsonify(cuerpo), 409
+
+        # Un 5xx si es infraestructura: ahi el 502 es honesto y el consumidor
+        # hace bien en reintentar.
+        return jsonify(cuerpo), 502
     except Exception as e:
         print("❌ Error en refresh /api/promociones/item:", e)
         return jsonify({"error": str(e)}), 500

@@ -567,9 +567,24 @@ ACTIVITY_PING_URL = os.getenv("ACTIVITY_PING_URL")
 # ping rechazado no falla, simplemente no hace nada, en silencio. Por eso
 # tambien se mira el status de la respuesta mas abajo.
 ACTIVITY_PING_TOKEN = os.getenv("ACTIVITY_PING_TOKEN")
+
+# Ultimo intento de ping, para diagnostico. El unico que sabe si el ping llego es
+# este proceso: del lado del receptor no se ve si salio, y desde afuera no se ve
+# ni la configuracion ni la respuesta. Sin esto, saber si el circuito esta
+# cerrado exige entrar al servidor a mirar logs.
+_ultimo_ping = None
 # Corto a proposito. El ping corre en el camino de una notificacion de ML y no
 # vale un solo segundo de mas: si el destino no contesta rapido, que se pierda.
 ACTIVITY_PING_TIMEOUT = (2, 3)
+
+
+
+def _sin_token(texto):
+    """Saca el token de un texto antes de exponerlo. Un mensaje de error puede
+    traer la URL o el header adentro."""
+    if ACTIVITY_PING_TOKEN and texto:
+        return texto.replace(ACTIVITY_PING_TOKEN, "<token>")
+    return texto
 
 
 def notificar_actividad(topic):
@@ -592,12 +607,26 @@ def notificar_actividad(topic):
     # porque parece configurado y falla igual.
     headers = {"Authorization": f"Bearer {ACTIVITY_PING_TOKEN}"} if ACTIVITY_PING_TOKEN else {}
 
+    global _ultimo_ping
+
     try:
         res = requests.post(ACTIVITY_PING_URL, headers=headers, timeout=ACTIVITY_PING_TIMEOUT)
+        _ultimo_ping = {
+            "cuando": datetime.now(ZoneInfo("UTC")).isoformat(),
+            "topic": topic,
+            "status": res.status_code,
+            "error": None,
+        }
         if res.status_code >= 400:
             # El token nunca va al log.
             print(f"\u26a0\ufe0f Ping de actividad rechazado ({topic}): status={res.status_code}")
     except Exception as e:
+        _ultimo_ping = {
+            "cuando": datetime.now(ZoneInfo("UTC")).isoformat(),
+            "topic": topic,
+            "status": None,
+            "error": _sin_token(str(e)),
+        }
         # Best-effort de verdad: no se reintenta ni se propaga. El pull cubre
         # el hueco sin que nadie se entere.
         print(f"\u26a0\ufe0f Ping de actividad fallido ({topic}): {e}")
@@ -3049,6 +3078,34 @@ def ml_activity_read():
         "events": eventos,
         "next_cursor": _encode_activity_cursor(filas[-1][0]) if filas else since,
         "has_more": len(filas) == limit,
+    })
+
+
+
+@app.route("/api/ml/activity/ping-status", methods=["GET"])
+def ml_activity_ping_status():
+    """Si el ping esta configurado y como salio el ultimo.
+
+    Existe porque el circuito del ping no se puede verificar desde ninguno de los
+    dos extremos: el receptor no ve si salio, y aca no se ve si lo aceptaron
+    salvo mirando logs en el servidor. El unico que sabe las dos cosas es este
+    proceso.
+
+    Nunca devuelve el token: del destino sale solo el host.
+    """
+    destino = None
+    if ACTIVITY_PING_URL:
+        try:
+            destino = urlsplit(ACTIVITY_PING_URL).hostname
+        except ValueError:
+            destino = None
+
+    return jsonify({
+        "configurado": bool(ACTIVITY_PING_URL),
+        "destino": destino,
+        "token_presente": bool(ACTIVITY_PING_TOKEN),
+        "topics": list(ACTIVITY_TOPICS),
+        "ultimo": _ultimo_ping,
     })
 
 

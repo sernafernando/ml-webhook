@@ -734,3 +734,104 @@ def test_se_puede_acotar_a_un_topic(monkeypatch):
 def test_un_topic_fuera_del_puente_se_rechaza(monkeypatch):
     with pytest.raises(ValueError):
         app_module.backfill_vinculos_actividad(topics=["items"])
+
+
+# =====================================================================
+# Diagnostico del ping: poder ver si funciona sin entrar al servidor
+# =====================================================================
+# Dos sesiones quedaron bloqueadas preguntandose si el ping llegaba: de un lado
+# no se ve la respuesta del receptor, del otro no hay acceso a la base ni a los
+# logs. El unico que sabe que paso es el proceso que lo manda, asi que lo cuenta.
+
+@pytest.fixture
+def ping_limpio(monkeypatch):
+    monkeypatch.setattr(app_module, "_ultimo_ping", None)
+    app_module.app.config["TESTING"] = True
+    with app_module.app.test_client() as c:
+        yield c
+
+
+def test_dice_si_el_ping_esta_configurado(ping_limpio, monkeypatch):
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", None)
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_TOKEN", None)
+
+    d = ping_limpio.get("/api/ml/activity/ping-status").get_json()
+
+    assert d["configurado"] is False
+    assert d["token_presente"] is False
+    assert d["ultimo"] is None
+
+
+def test_muestra_el_destino_sin_el_token(ping_limpio, monkeypatch):
+    """El host alcanza para saber a donde apunta. El token no sale nunca."""
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL",
+                        "https://pricing.gaussonline.com.ar/api/ml-ventas-ops/activity/ping")
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_TOKEN", "TOKEN-SECRETO")
+
+    res = ping_limpio.get("/api/ml/activity/ping-status")
+    d = res.get_json()
+
+    assert d["configurado"] is True
+    assert d["token_presente"] is True
+    assert d["destino"] == "pricing.gaussonline.com.ar"
+    assert "TOKEN-SECRETO" not in res.get_data(as_text=True)
+
+
+def test_registra_el_ultimo_intento_aceptado(ping_limpio, monkeypatch):
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/ping")
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_TOKEN", "T")
+    monkeypatch.setattr(app_module.requests, "post",
+                        lambda url, **kw: _Resp({}, status_code=202))
+
+    app_module.notificar_actividad("orders_v2")
+    d = ping_limpio.get("/api/ml/activity/ping-status").get_json()
+
+    assert d["ultimo"]["status"] == 202
+    assert d["ultimo"]["topic"] == "orders_v2"
+    assert d["ultimo"]["error"] is None
+    assert d["ultimo"]["cuando"]
+
+
+def test_registra_un_rechazo_del_receptor(ping_limpio, monkeypatch):
+    """Un 401 es justo lo que hay que poder ver: significa que el ping SALE pero
+    el receptor no lo acepta, que es distinto de que no salga."""
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/ping")
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_TOKEN", "T")
+    monkeypatch.setattr(app_module.requests, "post",
+                        lambda url, **kw: _Resp({}, status_code=401))
+
+    app_module.notificar_actividad("orders_v2")
+    d = ping_limpio.get("/api/ml/activity/ping-status").get_json()
+
+    assert d["ultimo"]["status"] == 401
+
+
+def test_registra_que_no_se_pudo_llegar(ping_limpio, monkeypatch):
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/ping")
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_TOKEN", "T")
+
+    def _boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(app_module.requests, "post", _boom)
+
+    app_module.notificar_actividad("orders_v2")
+    d = ping_limpio.get("/api/ml/activity/ping-status").get_json()
+
+    assert d["ultimo"]["status"] is None
+    assert "connection refused" in d["ultimo"]["error"]
+
+
+def test_el_diagnostico_no_filtra_el_token_ni_en_un_error(ping_limpio, monkeypatch):
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_URL", "https://pricing/ping")
+    monkeypatch.setattr(app_module, "ACTIVITY_PING_TOKEN", "TOKEN-SECRETO")
+
+    def _boom(*a, **k):
+        raise RuntimeError("fallo con Bearer TOKEN-SECRETO adentro")
+
+    monkeypatch.setattr(app_module.requests, "post", _boom)
+
+    app_module.notificar_actividad("orders_v2")
+    crudo = ping_limpio.get("/api/ml/activity/ping-status").get_data(as_text=True)
+
+    assert "TOKEN-SECRETO" not in crudo

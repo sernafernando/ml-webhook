@@ -130,6 +130,11 @@ que es un proxy de lectura arbitraria y está marcado para cerrarse.
   sin él (simulacro por defecto, `--aplicar` para escribir). Actualiza en su
   lugar: no inserta, no borra y no reordena, así que los cursores que los
   consumidores ya guardaron siguen siendo válidos.
+  `GET /api/ml/activity/ping-status` dice si el ping está configurado, a qué host
+  apunta y cómo salió el último intento (status del receptor, o el error si no se
+  pudo llegar). Nunca devuelve el token. Existe porque el circuito del ping no se
+  puede verificar desde ninguno de los dos extremos: el receptor no ve si salió,
+  y acá no se ve si lo aceptaron salvo mirando logs en el servidor.
   Opcionalmente avisa por un ping sin payload, que es best-effort: si se pierde,
   el próximo pull lo levanta igual. Se configura con `ACTIVITY_PING_URL` y
   `ACTIVITY_PING_TOKEN`; el token viaja como `Authorization: Bearer <token>` y

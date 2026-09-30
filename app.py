@@ -328,6 +328,36 @@ ML_BILLING_PATTERNS = (
 # legitimo necesita ir mas rapido que esto.
 BILLING_MIN_INTERVAL_SECONDS = 15
 
+
+
+# ---- Inventario: stock y reposicion de Full para meli-full-report ----
+#
+# El reporte de Full necesita stock y ventas por item, pero no puede tener el
+# token de ML: el refresh_token es de un solo uso y es de esta app. Si otro
+# proceso lo refresca, a esta app se le invalida. /api/ml/render lo resolveria
+# hoy, pero es el proxy arbitrario que se va a cerrar (ver ml_orders_read).
+#
+# Patrones completos y no prefijos, igual que ML_ORDERS_PATTERNS. Se compilan
+# con re.ASCII porque sin el \d acepta digitos unicode ('MLA١٢٣'), que ML no
+# emite y que no hay por que mandarle.
+ML_INVENTORY_REPLENISHMENT_PATTERN = re.compile(
+    # La reposicion de Full. Es el unico recurso de esta lista que ML atiende
+    # recien con x-caller-id y x-caller-siteId (ver ml_inventory_read). country
+    # queda fijo en AR: el vendedor es uno solo y es de MLA.
+    r"/marketplace/fbm/user-products/MLAU\d+/replenishment\?country=AR",
+    re.ASCII,
+)
+ML_INVENTORY_PATTERNS = (
+    # Multiget de items: available_quantity y sold_quantity de hasta 20 items
+    # por request, que es el tope de ML. attributes solo recorta campos del
+    # cuerpo, asi que habilitarlo no abre nada nuevo.
+    re.compile(r"/items\?ids=MLA\d+(?:,MLA\d+){0,19}(?:&attributes=[\w.]+(?:,[\w.]+)*)?", re.ASCII),
+    # El stock por deposito del user product. Es lo que separa lo que esta en
+    # Full de lo que esta en el deposito propio; el item solo trae el total.
+    re.compile(r"/user-products/MLAU\d+/stock", re.ASCII),
+    ML_INVENTORY_REPLENISHMENT_PATTERN,
+)
+
 _billing_lock = threading.Lock()
 _billing_last_call = 0.0
 
@@ -427,6 +457,11 @@ def proyectar_pago(pago):
 
 def ml_billing_resource_permitido(resource):
     return isinstance(resource, str) and any(p.match(resource) for p in ML_BILLING_PATTERNS)
+
+
+def ml_inventory_resource_permitido(resource):
+    # fullmatch y no match con '$': '$' tambien calza antes de un '\n' final.
+    return isinstance(resource, str) and any(p.fullmatch(resource) for p in ML_INVENTORY_PATTERNS)
 
 
 
@@ -2835,6 +2870,74 @@ def ml_billing_read():
             "error": "respuesta no-JSON de ML",
             "ml_status": res.status_code,
         }), res.status_code if res.status_code >= 400 else 502
+
+
+
+@app.route("/api/ml/inventory", methods=["GET"])
+def ml_inventory_read():
+    """Lectura de stock y reposicion de Full para meli-full-report.
+
+    Mismo contrato de respuesta que /api/ml/orders: JSON siempre, status de ML
+    preservado, el resource crudo va al log y no al body.
+
+    El 206 se preserva y se reenvia x-content-missing: ML contesta 206 cuando le
+    falta una parte del dato (por ejemplo un deposito del stock), y ese header
+    dice cual. Pasarlo como 200 haria que el consumidor tome un stock parcial
+    por completo.
+
+    El cuerpo va sin tocar: a diferencia de packs y costs, ninguno de estos
+    recursos trae datos del comprador, asi que sin_comprador no aplica.
+    """
+    resource = request.args.get("resource")
+    if not resource:
+        return jsonify({"error": "Falta parametro resource"}), 400
+
+    if not ml_inventory_resource_permitido(resource):
+        print(f"\u26d4 INVENTORY RESOURCE RECHAZADO resource={resource!r}")
+        return jsonify({
+            "error": "resource no permitido; se aceptan /items?ids=<hasta 20 MLA>, /user-products/<MLAU>/stock y /marketplace/fbm/user-products/<MLAU>/replenishment?country=AR"
+        }), 400
+
+    ml_url, motivo = build_ml_api_url(resource)
+    if ml_url is None:
+        print(f"\u26d4 INVENTORY RESOURCE INVALIDO motivo={motivo} resource={resource!r}")
+        return jsonify({"error": "resource invalido"}), 400
+
+    # Los headers de caller los pone la app, nunca el consumidor: el seller es
+    # el dueno del token, y dejar elegirlo seria dejar leer como otro. Solo
+    # reposicion los lleva, asi que solo ahi se lee el seller_id; un fallo de
+    # esa lectura no tiene por que tirar el stock.
+    caller = {}
+    if ML_INVENTORY_REPLENISHMENT_PATTERN.fullmatch(resource):
+        try:
+            seller_id = _promos_seller_id()
+        except Exception as e:
+            print("❌ Error leyendo seller_id para reposicion:", e)
+            seller_id = None
+        if seller_id is None:
+            return jsonify({"error": "seller_id no disponible (ml_tokens.user_id fila id=1)"}), 500
+        caller = {"x-caller-id": str(seller_id), "x-caller-siteId": "MLA"}
+
+    try:
+        res = ml_api_get(ml_url, headers={"Authorization": f"Bearer {get_token()}", **caller})
+    except Exception as e:
+        print(f"\u274c Error leyendo {resource!r} de inventario:", e)
+        return jsonify({"error": "no se pudo leer el recurso de ML"}), 502
+
+    try:
+        cuerpo = res.json()
+    except Exception:
+        print(f"\u26a0\ufe0f Respuesta no-JSON de inventario status={res.status_code} resource={resource!r}")
+        return jsonify({
+            "error": "respuesta no-JSON de ML",
+            "ml_status": res.status_code,
+        }), res.status_code if res.status_code >= 400 else 502
+
+    extra = {}
+    faltante = res.headers.get("x-content-missing")
+    if faltante:
+        extra["x-content-missing"] = faltante
+    return jsonify(cuerpo), res.status_code, extra
 
 
 

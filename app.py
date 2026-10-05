@@ -4204,11 +4204,17 @@ def _upsert_item_promo_status(cur, mla, promo_key, promo_type, status, detail):
     """, (mla, promo_key, promo_type, status, Json(detail)))
 
 
+# Estados "vivos" que el close-set de reconcile_item_promotions baja a 'finished'.
+_PROMO_ACTIVE_STATUSES = ("candidate", "started", "pending")
+
+
 def reconcile_item_promotions(mla):
     """Reconcilia TODAS las promos de un MLA via /seller-promotions/items/{mla}
     y persiste con precios (reusa _persist_item_promos). Lo usa worker_promos.
-    Cierra el set: baja a 'finished' las filas 'started' de este MLA que ML ya no
-    reporta (el item salio de esa promo), para no dejar 'started' pegados."""
+    Cierra el set completo: ante un 200 con cuerpo lista (incluso vacia), baja a
+    'finished' las filas 'candidate'/'started'/'pending' de este MLA que ML ya no
+    reporta (el item salio de esa promo o esta vencio), para no dejar promos
+    aplicables pegadas. Cuerpo que no es lista o respuesta no-200: no cierra nada."""
     res = _promos_api_get(f"/seller-promotions/items/{mla}")
     if res.status_code != 200:
         print(f"⚠️ reconcile promos {mla} -> ML {res.status_code}")
@@ -4227,14 +4233,18 @@ def reconcile_item_promotions(mla):
     data = res.json()
     reconcile_item_promotions.ultimo_error = None
     _persist_item_promos(mla, data)
-    if isinstance(data, list) and data:
+    # Fail-safe: solo se cierra si el cuerpo es una lista (incluida la vacia = el
+    # item no tiene promos). Cualquier otra forma es inesperada: no se cierra nada.
+    if isinstance(data, list):
+        # Misma derivacion de key que _persist_item_promos (lo recien upserteado
+        # no se puede cerrar).
         current = [k for k in ((e.get("id") or e.get("type")) for e in data if isinstance(e, dict)) if k]
         try:
             with db_cursor() as cur:
                 cur.execute(
                     "UPDATE ml_item_promotions SET status='finished', updated_at=NOW() "
-                    "WHERE mla=%s AND status='started' AND NOT (promotion_id = ANY(%s))",
-                    (mla, current),
+                    "WHERE mla=%s AND status = ANY(%s) AND NOT (promotion_id = ANY(%s))",
+                    (mla, list(_PROMO_ACTIVE_STATUSES), current),
                 )
         except Exception as e:
             print("⚠️ reconcile close-set fallo:", e)
@@ -4431,7 +4441,7 @@ def api_promociones_item(mla):
 def api_promociones_refresh(mla):
     """Refresca ml_item_promotions para UN MLA on-demand (post aplicar/desaplicar).
     Reusa reconcile_item_promotions: GET live /seller-promotions/items/{mla} +
-    upsert + close-set (baja 'started' huerfanos a 'finished'). Idempotente."""
+    upsert + close-set (baja candidate/started/pending ausentes a 'finished'). Idempotente."""
     try:
         reconcile_item_promotions.ultimo_error = None
         ok = reconcile_item_promotions(mla)

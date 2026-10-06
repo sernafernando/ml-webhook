@@ -347,11 +347,24 @@ ML_INVENTORY_REPLENISHMENT_PATTERN = re.compile(
     r"/marketplace/fbm/user-products/MLAU\d+/replenishment\?country=AR",
     re.ASCII,
 )
+ML_INVENTORY_ITEMS_BULK_PATTERN = re.compile(
+    r"/items/bulk\?ids=MLA\d+(?:,MLA\d+){0,19}(?:&attributes=body\.[\w.]+(?:,body\.[\w.]+)*)?",
+    re.ASCII,
+)
+ML_INVENTORY_ITEMS_LEGACY_PATTERN = re.compile(
+    r"/items\?ids=MLA\d+(?:,MLA\d+){0,19}(?:&attributes=[\w.]+(?:,[\w.]+)*)?", re.ASCII
+)
 ML_INVENTORY_PATTERNS = (
     # Multiget de items: available_quantity y sold_quantity de hasta 20 items
     # por request, que es el tope de ML. attributes solo recorta campos del
     # cuerpo, asi que habilitarlo no abre nada nuevo.
-    re.compile(r"/items\?ids=MLA\d+(?:,MLA\d+){0,19}(?:&attributes=[\w.]+(?:,[\w.]+)*)?", re.ASCII),
+    # /items/bulk reemplaza a /items?ids= (ML depreca el segundo el 25/10/2026,
+    # https://developers.mercadolibre.com.ar/es_ar/items-y-busquedas). En bulk
+    # cada atributo lleva el prefijo `body.`.
+    ML_INVENTORY_ITEMS_BULK_PATTERN,
+    # Forma vieja: se sigue aceptando durante la transicion, pero NUNCA sale
+    # asi hacia ML; ver ml_inventory_upstream_resource.
+    ML_INVENTORY_ITEMS_LEGACY_PATTERN,
     # El stock por deposito del user product. Es lo que separa lo que esta en
     # Full de lo que esta en el deposito propio; el item solo trae el total.
     re.compile(r"/user-products/MLAU\d+/stock", re.ASCII),
@@ -457,6 +470,25 @@ def proyectar_pago(pago):
 
 def ml_billing_resource_permitido(resource):
     return isinstance(resource, str) and any(p.match(resource) for p in ML_BILLING_PATTERNS)
+
+
+def ml_inventory_upstream_resource(resource):
+    """El resource que sale hacia ML. Se llama DESPUES de validar el allowlist.
+
+    La forma vieja /items?ids= se reenvia como /items/bulk?ids= con cada
+    attribute prefijado con `body.` (ML cierra el multiget viejo el
+    25/10/2026). La respuesta bulk se devuelve tal cual: `code` pasa a
+    `status_code` y cada elemento trae `id` en la raiz; el cliente de
+    pricing-app acepta ambas claves, asi que no se normaliza aca.
+    """
+    if not ML_INVENTORY_ITEMS_LEGACY_PATTERN.fullmatch(resource):
+        return resource
+    base, _, attrs = resource.partition("&attributes=")
+    bulk = base.replace("/items?ids=", "/items/bulk?ids=", 1)
+    if not attrs:
+        return bulk
+    prefijados = ",".join(a if a.startswith("body.") else f"body.{a}" for a in attrs.split(","))
+    return f"{bulk}&attributes={prefijados}"
 
 
 def ml_inventory_resource_permitido(resource):
@@ -2895,10 +2927,10 @@ def ml_inventory_read():
     if not ml_inventory_resource_permitido(resource):
         print(f"\u26d4 INVENTORY RESOURCE RECHAZADO resource={resource!r}")
         return jsonify({
-            "error": "resource no permitido; se aceptan /items?ids=<hasta 20 MLA>, /user-products/<MLAU>/stock y /marketplace/fbm/user-products/<MLAU>/replenishment?country=AR"
+            "error": "resource no permitido; se aceptan /items/bulk?ids=<hasta 20 MLA> (y /items?ids=, deprecado, reenviado como bulk), /user-products/<MLAU>/stock y /marketplace/fbm/user-products/<MLAU>/replenishment?country=AR"
         }), 400
 
-    ml_url, motivo = build_ml_api_url(resource)
+    ml_url, motivo = build_ml_api_url(ml_inventory_upstream_resource(resource))
     if ml_url is None:
         print(f"\u26d4 INVENTORY RESOURCE INVALIDO motivo={motivo} resource={resource!r}")
         return jsonify({"error": "resource invalido"}), 400

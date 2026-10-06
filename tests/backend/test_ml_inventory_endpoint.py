@@ -5,6 +5,9 @@ El consumidor necesita stock y ventas de Full pero no puede tener el token de ML
 /api/ml/orders: allowlist de patrones completos, JSON siempre, status de ML
 preservado y el resource crudo solo al log.
 """
+import json
+from pathlib import Path
+
 import pytest
 
 try:
@@ -28,6 +31,16 @@ class _Resp:
 
 
 SELLER_ID = 413658225
+
+# Captura REAL de produccion (2026-10-06, solo lectura, sin token) de ML:
+# /items/bulk con y sin attributes, con un id inexistente, y el multiget
+# viejo. Forma observada, que la doc de ML no publica:
+#   bulk sin attributes: [{id, status_code, body}]; inexistente: {id, status_code: 404, error}
+#   bulk con attributes: [{body: {...}}] (sin id ni status_code en la raiz); inexistente: {}
+#   legacy: [{code, body}]
+_CAPTURA = json.loads(
+    (Path(__file__).parent.parent / "fixtures" / "ml_items_bulk_capture.json").read_text())
+CAPTURA = {c["name"]: c for c in _CAPTURA["calls"]}
 
 
 @pytest.fixture
@@ -124,13 +137,34 @@ def test_la_forma_vieja_sale_hacia_ml_como_bulk(client, ml_calls, resource, espe
     assert ml_calls[0]["headers"]["Authorization"] == "Bearer TOKEN-DEL-VENDEDOR"
 
 
-def test_la_forma_vieja_devuelve_la_respuesta_de_ml_sin_tocar(client, ml_calls):
-    """Se devuelve lo que contesta ML, sin normalizar. Payload opaco a
-    proposito: falta un fixture capturado de un /items/bulk real (TODO)."""
-    res = client.get("/api/ml/inventory", query_string={"resource": "/items?ids=MLA123"})
+@pytest.mark.parametrize("nombre", ["bulk_full", "bulk_attributes", "bulk_single", "legacy_multiget"])
+def test_devuelve_la_respuesta_real_de_ml_sin_tocar(client, monkeypatch, nombre):
+    """El proxy no normaliza: las cuatro formas capturadas pasan identicas,
+    incluido el 404 por elemento (bulk: `error` sin body; con attributes: {})."""
+    captura = CAPTURA[nombre]
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(status_code=captura["status"], payload=captura["body"]))
 
-    assert res.status_code == 200
-    assert res.get_json() == {"ok": True}
+    res = client.get("/api/ml/inventory", query_string={"resource": captura["path"]})
+
+    assert res.status_code == captura["status"]
+    assert res.get_json() == captura["body"]
+
+
+def test_la_forma_vieja_pasa_el_cuerpo_bulk_sin_traducirlo(client, monkeypatch):
+    """Pedida en forma vieja, ML contesta en bulk (reenviamos a /items/bulk):
+    el consumidor recibe `status_code`, no `code`. Es el cambio de contrato
+    que motiva desplegar primero el cliente de pricing-app."""
+    captura = CAPTURA["bulk_full"]
+    monkeypatch.setattr(app_module, "ml_api_get",
+                        lambda *a, **k: _Resp(payload=captura["body"]))
+
+    res = client.get("/api/ml/inventory", query_string={
+        "resource": "/items?ids=MLA935110613,MLA934406852,MLA1"})
+
+    cuerpo = res.get_json()
+    assert cuerpo == captura["body"]
+    assert all("code" not in e and "status_code" in e for e in cuerpo)
 
 
 # =====================================================================
@@ -323,23 +357,6 @@ def test_sin_x_content_missing_no_inventa_el_header(client, ml_calls):
     res = client.get("/api/ml/inventory", query_string={"resource": STOCK})
 
     assert "x-content-missing" not in res.headers
-
-
-@pytest.mark.parametrize("resource", ["/items?ids=MLA123,MLA456", "/items/bulk?ids=MLA123,MLA456"])
-def test_multiget_pasa_los_codigos_por_item_tal_cual(client, monkeypatch, resource):
-    # Forma del cuerpo del endpoint deprecado, de la doc de ML. El de
-    # /items/bulk queda pendiente de un fixture capturado de ML (TODO): el
-    # endpoint no interpreta el cuerpo, lo reenvia.
-    cuerpo = [
-        {"code": 200, "body": {"id": "MLA123", "available_quantity": 5}},
-        {"code": 404, "body": {"message": "Item with id MLA456 not found"}},
-    ]
-    monkeypatch.setattr(app_module, "ml_api_get", lambda *a, **k: _Resp(payload=cuerpo))
-
-    res = client.get("/api/ml/inventory", query_string={"resource": resource})
-
-    assert res.status_code == 200
-    assert res.get_json() == cuerpo
 
 
 @pytest.mark.parametrize("status", [404, 429])

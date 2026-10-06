@@ -60,6 +60,8 @@ def no_ml(monkeypatch):
 
 ITEMS_20 = "/items?ids=" + ",".join(f"MLA{1000 + i}" for i in range(20))
 ITEMS_21 = "/items?ids=" + ",".join(f"MLA{1000 + i}" for i in range(21))
+BULK_20 = "/items/bulk?ids=" + ",".join(f"MLA{1000 + i}" for i in range(20))
+BULK_21 = "/items/bulk?ids=" + ",".join(f"MLA{1000 + i}" for i in range(21))
 STOCK = "/user-products/MLAU1234567890/stock"
 REPLENISHMENT = "/marketplace/fbm/user-products/MLAU1234567890/replenishment?country=AR"
 
@@ -69,10 +71,10 @@ REPLENISHMENT = "/marketplace/fbm/user-products/MLAU1234567890/replenishment?cou
 # =====================================================================
 
 @pytest.mark.parametrize("resource", [
-    "/items?ids=MLA123",
-    "/items?ids=MLA123,MLA456",
-    ITEMS_20,
-    "/items?ids=MLA123,MLA456&attributes=id,available_quantity,sold_quantity",
+    "/items/bulk?ids=MLA123",
+    "/items/bulk?ids=MLA123,MLA456",
+    BULK_20,
+    "/items/bulk?ids=MLA123,MLA456&attributes=body.id,body.available_quantity,body.sold_quantity",
     STOCK,
     REPLENISHMENT,
 ])
@@ -85,6 +87,50 @@ def test_acepta_los_recursos_de_inventario(client, ml_calls, resource):
     assert len(ml_calls) == 1
     assert ml_calls[0]["url"] == f"https://api.mercadolibre.com{resource}"
     assert ml_calls[0]["headers"]["Authorization"] == "Bearer TOKEN-DEL-VENDEDOR"
+
+
+# =====================================================================
+# Forma vieja /items?ids=: se acepta y sale hacia ML como /items/bulk
+# =====================================================================
+#
+# ML depreca el multiget /items?ids= (plazo 25/10/2026) a favor de
+# /items/bulk?ids=. Fuente:
+# https://developers.mercadolibre.com.ar/es_ar/items-y-busquedas
+# (seccion "Migracion de consultas multiples"): `code` pasa a `status_code`,
+# cada elemento trae `id` en la raiz y attributes lleva el prefijo `body.`.
+# La doc NO publica un ejemplo de respuesta de /items/bulk (solo los del
+# endpoint deprecado), asi que estos tests no inventan un cuerpo: prueban lo
+# que si es contrato, la URL que sale.
+
+@pytest.mark.parametrize("resource, esperado", [
+    ("/items?ids=MLA123", "/items/bulk?ids=MLA123"),
+    ("/items?ids=MLA123,MLA456", "/items/bulk?ids=MLA123,MLA456"),
+    (ITEMS_20, BULK_20),
+    ("/items?ids=MLA123,MLA456&attributes=id,available_quantity,sold_quantity",
+     "/items/bulk?ids=MLA123,MLA456&attributes=body.id,body.available_quantity,body.sold_quantity"),
+    ("/items?ids=MLA123&attributes=id", "/items/bulk?ids=MLA123&attributes=body.id"),
+    # un atributo anidado se prefija una sola vez
+    ("/items?ids=MLA123&attributes=shipping.logistic_type",
+     "/items/bulk?ids=MLA123&attributes=body.shipping.logistic_type"),
+    # si el consumidor ya migro el attributes, no se duplica el prefijo
+    ("/items?ids=MLA123&attributes=body.id", "/items/bulk?ids=MLA123&attributes=body.id"),
+])
+def test_la_forma_vieja_sale_hacia_ml_como_bulk(client, ml_calls, resource, esperado):
+    res = client.get("/api/ml/inventory", query_string={"resource": resource})
+
+    assert res.status_code == 200
+    assert len(ml_calls) == 1
+    assert ml_calls[0]["url"] == f"https://api.mercadolibre.com{esperado}"
+    assert ml_calls[0]["headers"]["Authorization"] == "Bearer TOKEN-DEL-VENDEDOR"
+
+
+def test_la_forma_vieja_devuelve_la_respuesta_de_ml_sin_tocar(client, ml_calls):
+    """Se devuelve lo que contesta ML, sin normalizar. Payload opaco a
+    proposito: falta un fixture capturado de un /items/bulk real (TODO)."""
+    res = client.get("/api/ml/inventory", query_string={"resource": "/items?ids=MLA123"})
+
+    assert res.status_code == 200
+    assert res.get_json() == {"ok": True}
 
 
 # =====================================================================
@@ -103,6 +149,25 @@ def test_acepta_los_recursos_de_inventario(client, ml_calls, resource):
     "/items?ids=MLA123&access_token=robado",
     "/items?ids=MLA١٢٣",               # digitos unicode, no ASCII
     ITEMS_21,                                         # multiget topea en 20
+    BULK_21,                                          # bulk tambien
+    "/items/bulk",
+    "/items/bulk?ids=MLA123/../../users/1",
+    "/items/bulk?ids=MLA123&ids=MLA456",
+    "/items/bulk?ids=MLA123,",
+    "/items/bulk?ids=MLB123",
+    "/items/bulk?ids=MLA123&attributes=",
+    "/items/bulk?ids=MLA123&attributes=id",           # bulk exige el prefijo body.
+    "/items/bulk?ids=MLA123&attributes=body.id,price",
+    "/items/bulk?ids=MLA123&attributes=body.id&x=1",
+    "/items/bulk?ids=MLA123&access_token=robado",
+    "/items/bulk?ids=MLA١٢٣",
+    "/items/bulk?ids=MLA123\n",
+    "/items/bulk/MLA123",
+    "/users/bulk?ids=123",                            # users no es inventario
+    "@evil.tld/items/bulk?ids=MLA123",
+    "//evil.tld/items/bulk?ids=MLA123",
+    "/items%2Fbulk?ids=MLA123",
+    "items/bulk?ids=MLA123",
     "/items",
     "/user-products/MLA123/stock",                    # id que no es MLAU
     "/user-products/MLAUabc/stock",
@@ -172,7 +237,7 @@ def test_replenishment_agrega_los_headers_de_caller(client, ml_calls):
     assert h["x-caller-siteId"] == "MLA"
 
 
-@pytest.mark.parametrize("resource", ["/items?ids=MLA123", STOCK])
+@pytest.mark.parametrize("resource", ["/items?ids=MLA123", "/items/bulk?ids=MLA123", STOCK])
 def test_los_demas_recursos_no_llevan_headers_de_caller(client, ml_calls, resource):
     client.get("/api/ml/inventory", query_string={"resource": resource})
 
@@ -260,14 +325,18 @@ def test_sin_x_content_missing_no_inventa_el_header(client, ml_calls):
     assert "x-content-missing" not in res.headers
 
 
-def test_multiget_pasa_los_codigos_por_item_tal_cual(client, monkeypatch):
+@pytest.mark.parametrize("resource", ["/items?ids=MLA123,MLA456", "/items/bulk?ids=MLA123,MLA456"])
+def test_multiget_pasa_los_codigos_por_item_tal_cual(client, monkeypatch, resource):
+    # Forma del cuerpo del endpoint deprecado, de la doc de ML. El de
+    # /items/bulk queda pendiente de un fixture capturado de ML (TODO): el
+    # endpoint no interpreta el cuerpo, lo reenvia.
     cuerpo = [
         {"code": 200, "body": {"id": "MLA123", "available_quantity": 5}},
         {"code": 404, "body": {"message": "Item with id MLA456 not found"}},
     ]
     monkeypatch.setattr(app_module, "ml_api_get", lambda *a, **k: _Resp(payload=cuerpo))
 
-    res = client.get("/api/ml/inventory", query_string={"resource": "/items?ids=MLA123,MLA456"})
+    res = client.get("/api/ml/inventory", query_string={"resource": resource})
 
     assert res.status_code == 200
     assert res.get_json() == cuerpo

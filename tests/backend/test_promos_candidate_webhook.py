@@ -83,7 +83,6 @@ def test_candidate_no_toca_la_tabla_ni_llama_a_ml_en_linea(entorno):
 
     app_module._process_promotion_webhook(CANDIDATE)
 
-    assert not any("ml_item_promotions" in s for s in usos["sql"])
     assert usos["sql"] == []
     assert usos["ml"] == []
 
@@ -100,6 +99,31 @@ def test_candidate_sin_mla_no_encola_nada_y_no_rompe(entorno, resource):
 
     assert _sucios(redis) == set()
     assert usos["sql"] == []
+
+
+def test_offer_sigue_encolando_el_mla(entorno):
+    redis, _ = entorno
+
+    app_module._process_promotion_webhook(
+        "/seller-promotions/offers/OFFER-MLA1807356285-11627676498")
+
+    assert _sucios(redis) == {"MLA1807356285"}
+
+
+@pytest.mark.parametrize("resource", [
+    CANDIDATE,
+    "/seller-promotions/offers/OFFER-MLA1807356285-11627676498",
+])
+def test_sin_redis_reconcilia_en_linea_en_vez_de_perder_el_aviso(entorno, monkeypatch, resource):
+    """Sin redis no hay set de sucios: el aviso no se puede perder en silencio.
+    Se corre el reconcile completo (con precios) en linea."""
+    reconciliados = []
+    monkeypatch.setattr(app_module, "_redis_client", None)
+    monkeypatch.setattr(app_module, "reconcile_item_promotions", reconciliados.append)
+
+    app_module._process_promotion_webhook(resource)
+
+    assert reconciliados == ["MLA1807356285"]
 
 
 def test_promo_resource_mla_entiende_candidates():

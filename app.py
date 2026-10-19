@@ -4276,14 +4276,21 @@ def _process_promotion_webhook(resource):
     candidates y offers van por el mismo camino: encolan el MLA en un set redis y
     worker_promos corre reconcile_item_promotions (upsert completo con precios +
     close-set). Un candidate NO se procesa en linea: un upsert de solo estado
-    dejaba el precio y el payload viejos con updated_at recien puesto."""
+    dejaba el precio y el payload viejos con updated_at recien puesto.
+    Sin redis no hay set de sucios: el reconcile completo corre en linea para no
+    perder el aviso en silencio."""
     if not PROMOS_WEBHOOK_ENABLED:
         return
     try:
         if "/candidates/" in resource or "/offers/" in resource:
             mla = _promo_resource_mla(resource)
-            if mla and _redis_client is not None:
+            if not mla:
+                return
+            if _redis_client is not None:
                 _redis_client.sadd(PROMOS_DIRTY_SET_KEY, mla)
+            else:
+                print(f"⚠️ promo webhook sin redis: reconcile en linea de {mla}")
+                reconcile_item_promotions(mla)
     except Exception as e:
         print("⚠️ promo webhook fallo:", e)
 

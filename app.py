@@ -4200,7 +4200,8 @@ def _persist_promo_items(promo_id, promotion_type, data):
 
 def _promo_resource_mla(resource):
     """Extrae el MLA embebido en un resource de seller-promotions.
-    Ej: /seller-promotions/offers/OFFER-MLA1632687413-111 -> MLA1632687413."""
+    Ej: /seller-promotions/offers/OFFER-MLA1632687413-111 -> MLA1632687413,
+    /seller-promotions/candidates/CANDIDATE-MLA1807356285-71690560920 -> MLA1807356285."""
     last = (resource or "").rstrip("/").split("/")[-1]
     for part in last.split("-"):
         if part.startswith("MLA"):
@@ -4221,19 +4222,6 @@ def _promos_api_get(resource, extra_params=None):
         headers={"Authorization": f"Bearer {token}"},
         params=params,
     )
-
-
-def _upsert_item_promo_status(cur, mla, promo_key, promo_type, status, detail):
-    """Upsert PARCIAL (webhook): actualiza estado sin pisar precios ni el payload
-    de lectura. En fila nueva inserta con precios NULL y el payload del offer/candidate."""
-    cur.execute("""
-        INSERT INTO ml_item_promotions (mla, promotion_id, promotion_type, status, payload, updated_at)
-        VALUES (%s,%s,%s,%s,%s,NOW())
-        ON CONFLICT (mla, promotion_id) DO UPDATE SET
-            promotion_type = COALESCE(EXCLUDED.promotion_type, ml_item_promotions.promotion_type),
-            status = EXCLUDED.status,
-            updated_at = NOW();
-    """, (mla, promo_key, promo_type, status, Json(detail)))
 
 
 # Estados "vivos" que el close-set de reconcile_item_promotions baja a 'finished'.
@@ -4283,39 +4271,26 @@ def reconcile_item_promotions(mla):
     return True
 
 
-def _process_promotion_candidate(resource):
-    """Candidate (bajo volumen): fetch del detalle + upsert de estado."""
-    res = _promos_api_get(resource)
-    if res.status_code != 200:
-        print(f"⚠️ candidate {resource} -> ML {res.status_code}")
-        return
-    d = res.json()
-    mla = d.get("item_id")
-    if not mla:
-        return
-    promo_key = d.get("promotion_id") or d.get("type")
-    if not promo_key:
-        return
-    status = d.get("status")
-    if isinstance(status, dict):
-        status = status.get("id")
-    with db_cursor() as cur:
-        _upsert_item_promo_status(cur, mla, promo_key, d.get("type"), status, d)
-
-
 def _process_promotion_webhook(resource):
     """Router de webhooks seller-promotions. Best-effort, nunca rompe el webhook.
-    - candidates (~2/min): procesa sync (fetch + upsert estado).
-    - offers (flood): encola el MLA en un set redis; lo reconcilia worker_promos."""
+    candidates y offers van por el mismo camino: encolan el MLA en un set redis y
+    worker_promos corre reconcile_item_promotions (upsert completo con precios +
+    close-set). Un candidate NO se procesa en linea: un upsert de solo estado
+    dejaba el precio y el payload viejos con updated_at recien puesto.
+    Sin redis no hay set de sucios: el reconcile completo corre en linea para no
+    perder el aviso en silencio."""
     if not PROMOS_WEBHOOK_ENABLED:
         return
     try:
-        if "/candidates/" in resource:
-            _process_promotion_candidate(resource)
-        elif "/offers/" in resource:
+        if "/candidates/" in resource or "/offers/" in resource:
             mla = _promo_resource_mla(resource)
-            if mla and _redis_client is not None:
+            if not mla:
+                return
+            if _redis_client is not None:
                 _redis_client.sadd(PROMOS_DIRTY_SET_KEY, mla)
+            else:
+                print(f"⚠️ promo webhook sin redis: reconcile en linea de {mla}")
+                reconcile_item_promotions(mla)
     except Exception as e:
         print("⚠️ promo webhook fallo:", e)
 

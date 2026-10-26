@@ -4799,6 +4799,62 @@ def api_pxq_item_post(item_id):
         return jsonify({"error": str(e), "pxq_write": PXQ_WRITE_AMBIGUOUS}), 500
 
 
+# -------------------------------------------------------------
+# 🔹 Estado de una publicacion (pausar / activar)
+# Mismo contrato que el POST de PxQ, con el campo 'status_write':
+#   "not_attempted" -> con certeza no se escribio (reintentar es seguro).
+#   "ambiguous"     -> pudo haberse aplicado (NO reintentar a ciegas).
+# La respuesta reenviada de ML no lleva el campo: su ausencia es "no sabemos".
+# Interruptor ITEM_STATUS_WRITE_ENABLED: prendido salvo que valga "0".
+# -------------------------------------------------------------
+ITEM_STATUS_WRITE_TIMEOUT = 12
+ITEM_STATUS_VALUES = ("paused", "active")
+ITEM_STATUS_WRITE_NOT_ATTEMPTED = "not_attempted"
+ITEM_STATUS_WRITE_AMBIGUOUS = "ambiguous"
+_MLA_ITEM_ID = re.compile(r"^MLA\d+$")
+
+
+@app.route("/api/items/<item_id>/status", methods=["PUT"])
+def api_item_status_put(item_id):
+    """Pausa o activa una publicacion: PUT /items/{id} con {"status": ...}.
+    SINGLE-SHOT: no reintenta. El status code de ML se preserva tal cual."""
+    if os.getenv("ITEM_STATUS_WRITE_ENABLED", "1") == "0":
+        return jsonify({
+            "error": "Escritura de estado de publicaciones deshabilitada",
+            "status_write": ITEM_STATUS_WRITE_NOT_ATTEMPTED,
+        }), 503
+    body = request.get_json(silent=True)
+    status = body.get("status") if isinstance(body, dict) else None
+    if not _MLA_ITEM_ID.match(item_id) or status not in ITEM_STATUS_VALUES:
+        # Validacion local: ni siquiera se toco la red. Certeza total.
+        return jsonify({
+            "error": "Se requiere un MLA y un body {\"status\": \"paused\" | \"active\"}",
+            "status_write": ITEM_STATUS_WRITE_NOT_ATTEMPTED,
+        }), 400
+    try:
+        print(f"📝 ITEM STATUS item={item_id} -> {status}")
+        _ml_pxq_throttle()
+        res = requests.put(
+            f"https://api.mercadolibre.com/items/{item_id}",
+            headers={"Authorization": f"Bearer {get_token()}"},
+            json={"status": status},
+            timeout=ITEM_STATUS_WRITE_TIMEOUT,
+        )
+        print(f"📝 ITEM STATUS item={item_id} -> {res.status_code}")
+        # PASSTHROUGH PURO: sin 'status_write' (ver el contrato arriba).
+        return jsonify(_ml_pxq_payload(res)), res.status_code
+    except requests.Timeout:
+        print(f"⏱️ ITEM STATUS timeout item={item_id} (ambiguo: pudo haberse aplicado)")
+        return jsonify({
+            "error": "timeout cambiando el estado en ML (ambiguo)",
+            "status_write": ITEM_STATUS_WRITE_AMBIGUOUS,
+        }), 504
+    except Exception as e:
+        # Ambiguo a proposito: puede dispararse antes o despues del PUT a ML.
+        print("❌ Error en PUT /api/items/status:", e)
+        return jsonify({"error": str(e), "status_write": ITEM_STATUS_WRITE_AMBIGUOUS}), 500
+
+
 @app.route("/debug/promos")
 def debug_promos():
     """TEMPORARY — probe empirica read-only para Central de Promociones (v2).

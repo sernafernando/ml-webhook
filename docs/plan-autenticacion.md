@@ -95,7 +95,7 @@ CREATE TABLE api_clients (
 
 Por grupo funcional, no por recurso individual:
 
-`pxq:read` · `pxq:write` · `promos:read` · `promos:write` · `webhooks:read` · `ml:render` · `admin`
+`pxq:read` · `pxq:write` · `promos:read` · `promos:write` · `items:write` · `webhooks:read` · `ml:render` · `admin`
 
 `ml:render` se otorga con criterio restrictivo aun después de la Fase 0: sigue siendo un proxy de lectura amplio hacia datos de compradores.
 
@@ -159,7 +159,7 @@ Transición sin pérdida de notificaciones: se levanta el path nuevo **procesand
 
 | Orden | Grupo | Consumidores | Riesgo de romper |
 |---|---|---|---|
-| 1 | Escrituras: `POST /api/pxq/*`, `POST`/`DELETE /api/promociones/*`, `/admin/*` | Probablemente solo pricing-app | **Bajo** — se coordina con un equipo |
+| 1 | Escrituras: `POST /api/pxq/*`, `POST`/`DELETE /api/promociones/*`, `PUT /api/items/*/status`, `/admin/*` | Probablemente solo pricing-app | **Bajo** — se coordina con un equipo |
 | 2 | Lecturas de negocio: `/api/pxq/*` GET, `/api/promociones` GET, `/api/webhooks` | Desconocidos | Alto — requiere el inventario de Fase 1 |
 | 3 | `/webhook` | MercadoLibre | Medio — cambio de un campo en ML, coordinado |
 | 4 | Páginas HTML: `/consulta`, `/seller`, `/catalog*` | Personas | Bajo — Basic funciona nativo en el navegador |

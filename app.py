@@ -4855,6 +4855,157 @@ def api_item_status_put(item_id):
         return jsonify({"error": str(e), "status_write": ITEM_STATUS_WRITE_AMBIGUOUS}), 500
 
 
+# -------------------------------------------------------------
+# 🔹 Datos y descripcion de una publicacion (boton "Actualizar en ML")
+# Mismo contrato de certeza que el PUT de estado, con un campo propio por ruta:
+#   'data_write'        en PUT /api/items/<id>/data
+#   'description_write' en PUT /api/items/<id>/description
+# El campo lo agrega SOLO el proxy, nunca se agrega a un cuerpo de ML:
+#   "not_attempted" -> con certeza no se escribio (reintentar es seguro).
+#   "ambiguous"     -> pudo haberse aplicado (NO reintentar a ciegas).
+# La respuesta reenviada de ML no lleva el campo: su ausencia es "no sabemos".
+# Interruptores ITEM_DATA_WRITE_ENABLED / ITEM_DESCRIPTION_WRITE_ENABLED:
+# prendidos salvo que valgan "0".
+# -------------------------------------------------------------
+ITEM_DATA_WRITE_TIMEOUT = 12
+ITEM_DESCRIPTION_WRITE_TIMEOUT = 12
+ITEM_DATA_WRITE_NOT_ATTEMPTED = "not_attempted"
+ITEM_DATA_WRITE_AMBIGUOUS = "ambiguous"
+ITEM_DESCRIPTION_WRITE_NOT_ATTEMPTED = "not_attempted"
+ITEM_DESCRIPTION_WRITE_AMBIGUOUS = "ambiguous"
+
+# Las UNICAS claves que el proxy reenvia a ML en /data. Todo lo demas se
+# descarta a proposito: el consumidor manda el subconjunto que cambio, y una
+# clave de mas (price, status, available_quantity) seria una escritura que
+# nadie pidio.
+ITEM_DATA_ALLOWED_KEYS = ("title", "pictures", "attributes")
+
+
+def _item_write_not_attempted(stamp, message, status):
+    """Respuesta propia del proxy: ML todavia no vio nada, certeza total."""
+    return jsonify({stamp: ITEM_DATA_WRITE_NOT_ATTEMPTED, "message": message}), status
+
+
+def _item_write_token(stamp):
+    """Token de ML o la respuesta 503 'not_attempted' ya armada.
+
+    Separado del PUT a proposito: si no hay token, la escritura no salio y el
+    consumidor puede reintentar sin riesgo de duplicarla.
+    """
+    try:
+        token = get_token()
+    except Exception as e:
+        print(f"❌ ITEM WRITE sin token ({stamp}):", e)
+        return None, _item_write_not_attempted(
+            stamp, "no se pudo obtener el token de ML; no se escribio", 503)
+    if not token:
+        return None, _item_write_not_attempted(
+            stamp, "no hay token de ML disponible; no se escribio", 503)
+    return token, None
+
+
+@app.route("/api/items/<item_id>/data", methods=["PUT"])
+def api_item_data_put(item_id):
+    """Actualiza titulo, fotos y/o atributos: PUT /items/{id}.
+    SINGLE-SHOT: no reintenta. El status code de ML se preserva tal cual."""
+    if os.getenv("ITEM_DATA_WRITE_ENABLED", "1") == "0":
+        return _item_write_not_attempted(
+            "data_write", "escritura de datos de publicaciones deshabilitada", 503)
+    if not _MLA_ITEM_ID.match(item_id):
+        return _item_write_not_attempted(
+            "data_write", "el item debe ser un MLA, por ejemplo MLA123456789", 400)
+
+    body = request.get_json(silent=True)
+    payload = {}
+    if isinstance(body, dict):
+        payload = {k: body[k] for k in ITEM_DATA_ALLOWED_KEYS if k in body}
+    if not payload:
+        return _item_write_not_attempted(
+            "data_write",
+            "se requiere al menos una de las claves 'title', 'pictures' o 'attributes'",
+            422)
+
+    token, fallo = _item_write_token("data_write")
+    if fallo is not None:
+        return fallo
+    try:
+        print(f"📝 ITEM DATA item={item_id} claves={sorted(payload)}")
+        _ml_pxq_throttle()
+        res = requests.put(
+            f"https://api.mercadolibre.com/items/{item_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload,
+            timeout=ITEM_DATA_WRITE_TIMEOUT,
+        )
+        print(f"📝 ITEM DATA item={item_id} -> {res.status_code}")
+        # PASSTHROUGH PURO: sin 'data_write' (ver el contrato arriba).
+        return jsonify(_ml_pxq_payload(res)), res.status_code
+    except requests.Timeout:
+        print(f"⏱️ ITEM DATA timeout item={item_id} (ambiguo: pudo haberse aplicado)")
+        return jsonify({
+            "data_write": ITEM_DATA_WRITE_AMBIGUOUS,
+            "message": "timeout escribiendo los datos en ML (ambiguo)",
+        }), 504
+    except Exception as e:
+        # Ambiguo a proposito: el PUT ya salio y no sabemos si ML lo aplico.
+        print("❌ Error en PUT /api/items/data:", e)
+        return jsonify({
+            "data_write": ITEM_DATA_WRITE_AMBIGUOUS,
+            "message": f"error escribiendo los datos en ML (ambiguo): {e}",
+        }), 502
+
+
+@app.route("/api/items/<item_id>/description", methods=["PUT"])
+def api_item_description_put(item_id):
+    """Reemplaza la descripcion: PUT /items/{id}/description?api_version=2.
+    SINGLE-SHOT: no reintenta. El status code de ML se preserva tal cual."""
+    if os.getenv("ITEM_DESCRIPTION_WRITE_ENABLED", "1") == "0":
+        return _item_write_not_attempted(
+            "description_write", "escritura de descripciones deshabilitada", 503)
+    if not _MLA_ITEM_ID.match(item_id):
+        return _item_write_not_attempted(
+            "description_write", "el item debe ser un MLA, por ejemplo MLA123456789", 400)
+
+    body = request.get_json(silent=True)
+    plain_text = body.get("plain_text") if isinstance(body, dict) else None
+    # Un texto en blanco borraria la descripcion publicada: eso nunca es lo
+    # que el consumidor quiso, asi que no sale de aca.
+    if not isinstance(plain_text, str) or not plain_text.strip():
+        return _item_write_not_attempted(
+            "description_write",
+            "se requiere un body {\"plain_text\": \"<texto no vacio>\"}",
+            422)
+
+    token, fallo = _item_write_token("description_write")
+    if fallo is not None:
+        return fallo
+    try:
+        print(f"📝 ITEM DESC item={item_id} largo={len(plain_text)}")
+        _ml_pxq_throttle()
+        res = requests.put(
+            f"https://api.mercadolibre.com/items/{item_id}/description?api_version=2",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"plain_text": plain_text},
+            timeout=ITEM_DESCRIPTION_WRITE_TIMEOUT,
+        )
+        print(f"📝 ITEM DESC item={item_id} -> {res.status_code}")
+        # PASSTHROUGH PURO: sin 'description_write' (ver el contrato arriba).
+        return jsonify(_ml_pxq_payload(res)), res.status_code
+    except requests.Timeout:
+        print(f"⏱️ ITEM DESC timeout item={item_id} (ambiguo: pudo haberse aplicado)")
+        return jsonify({
+            "description_write": ITEM_DESCRIPTION_WRITE_AMBIGUOUS,
+            "message": "timeout escribiendo la descripcion en ML (ambiguo)",
+        }), 504
+    except Exception as e:
+        # Ambiguo a proposito: el PUT ya salio y no sabemos si ML lo aplico.
+        print("❌ Error en PUT /api/items/description:", e)
+        return jsonify({
+            "description_write": ITEM_DESCRIPTION_WRITE_AMBIGUOUS,
+            "message": f"error escribiendo la descripcion en ML (ambiguo): {e}",
+        }), 502
+
+
 @app.route("/debug/promos")
 def debug_promos():
     """TEMPORARY — probe empirica read-only para Central de Promociones (v2).

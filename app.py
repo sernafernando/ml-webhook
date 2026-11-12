@@ -945,6 +945,35 @@ def _parse_bracket_floors(raw):
 # LIST price, so a promo below a floor was stored with the next bracket's cost.
 SHIPPING_COST_BRACKET_FLOORS = _parse_bracket_floors(os.getenv("SHIPPING_COST_BRACKET_FLOORS", ""))
 
+class _TtlMemo:
+    """A bracket memo for `_quote_seller_shipping` that forgets entries after `ttl_seconds`, shared by the
+    items-webhook path of one process (thread-safe), so ML rate changes reach it within the TTL."""
+
+    def __init__(self, ttl_seconds):
+        self._ttl = ttl_seconds
+        self._entries = {}
+        self._lock = threading.Lock()
+
+    def get(self, key):
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            stored_at, value = entry
+            if time.monotonic() - stored_at > self._ttl:
+                del self._entries[key]
+                return None
+            return value
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            self._entries[key] = (time.monotonic(), value)
+
+
+# Items webhooks reuse brackets like the sweep does: 2 ML calls (weight probe + sale_price) instead of 4
+# for an MLA whose seller, billable weight, listing type, logistic type and mode were quoted recently.
+_WEBHOOK_BRACKET_MEMO = _TtlMemo(ttl_seconds=int(os.getenv("SHIPPING_COST_MEMO_TTL_SECONDS", "21600")))
+
 SHIPPING_COST_UPSERT_SQL = """
     INSERT INTO ml_seller_shipping_costs
         (mla_id, seller_id, list_cost, iva_included, currency_id,
@@ -1002,7 +1031,10 @@ def _quote_seller_shipping(mla_id, item_data, headers, memo=None):
         params = {"item_id": mla_id, "verbose": "true", "item_price": floor or 1}
         res = ml_api_get(url, headers=headers, params=params)
         if res.status_code != 200:
-            print(f"⚠️ shipping_cost {mla_id}: status={res.status_code} item_price={params['item_price']}, skip")
+            if res.status_code == 429:
+                print(f"⚠️ shipping_cost {mla_id}: rate limited by ML (429) item_price={params['item_price']}, skip")
+            else:
+                print(f"⚠️ shipping_cost {mla_id}: status={res.status_code} item_price={params['item_price']}, skip")
             return None
         body = res.json() or {}
         cov = (body.get("coverage") or {}).get("all_country") or {}
@@ -1086,7 +1118,7 @@ def _upsert_seller_shipping_cost(mla_id, item_data, source):
     """
     try:
         headers = {"Authorization": f"Bearer {get_token()}"}
-        quote = _quote_seller_shipping(mla_id, item_data, headers)
+        quote = _quote_seller_shipping(mla_id, item_data, headers, memo=_WEBHOOK_BRACKET_MEMO)
         if quote is None:
             return
         shipping = (item_data or {}).get("shipping") or {}

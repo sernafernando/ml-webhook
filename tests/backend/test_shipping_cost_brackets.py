@@ -51,6 +51,13 @@ def _free_calls(calls):
     return [p for u, p in calls if "/shipping_options/free" in u]
 
 
+@pytest.fixture(autouse=True)
+def _fresh_webhook_memo(monkeypatch):
+    """The webhook memo is process-wide: each test starts without cached brackets."""
+    if app_module is not None:
+        monkeypatch.setattr(app_module, "_WEBHOOK_BRACKET_MEMO", app_module._TtlMemo(ttl_seconds=3600))
+
+
 @pytest.fixture
 def captured_upserts(monkeypatch):
     rows = []
@@ -278,3 +285,39 @@ def test_a_200_without_coverage_is_a_failed_quote(monkeypatch, captured_upserts)
     app_module._upsert_seller_shipping_cost("MLA1173065146", REAL["MLA1173065146"]["item"], source="webhook")
 
     assert captured_upserts == []
+
+
+def test_webhook_path_reuses_brackets_across_notifications(monkeypatch, captured_upserts):
+    """Items webhooks of MLAs with the same shape: the full bracket set is quoted once per TTL, then 2 calls."""
+    calls = []
+    monkeypatch.setattr(app_module, "ml_api_get", _ml_router(calls))
+    monkeypatch.setattr(app_module, "_WEBHOOK_BRACKET_MEMO", app_module._TtlMemo(ttl_seconds=3600))
+    item = REAL["MLA1173065146"]["item"]
+
+    app_module._upsert_seller_shipping_cost("MLA1173065146", item, source="webhook")
+    first = len(calls)
+    app_module._upsert_seller_shipping_cost("MLA1173065146", item, source="webhook")
+
+    assert first == 4  # 3 brackets + sale_price
+    assert len(calls) - first == 2  # weight probe + sale_price
+    assert captured_upserts[-1][1][2] == 6790
+
+
+def test_webhook_memo_expires(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: now[0])
+    memo = app_module._TtlMemo(ttl_seconds=60)
+
+    memo["k"] = {"cached": True}
+    assert memo.get("k") == {"cached": True}
+    now[0] += 61
+    assert memo.get("k") is None
+
+
+def test_a_rate_limited_quote_is_logged_as_429(monkeypatch, capsys):
+    monkeypatch.setattr(app_module, "ml_api_get", _ml_router([], free_status=429))
+
+    quote = app_module._quote_seller_shipping("MLA1173065146", REAL["MLA1173065146"]["item"], {})
+
+    assert quote is None
+    assert "429" in capsys.readouterr().out

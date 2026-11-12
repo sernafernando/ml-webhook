@@ -54,6 +54,14 @@ Variables de entorno en un archivo `.env`:
 each bracket in `cost_by_bracket` and `list_cost` at the item's current `sale_price`. If ML moves a
 bracket edge, update this variable and re-run the shipping-cost sweep.
 
+`SHIPPING_COST_MEMO_TTL_SECONDS` (default `21600`, 6h) is how long the items webhook reuses the bracket
+costs it quoted for one (billable weight, listing type, logistic type, mode) shape. Within that window a
+notification only re-quotes `list_cost` at the current sale price. The sweep always re-quotes everything.
+
+Deploying the bracket costs: (1) run `migrations/20261112_01_add_shipping_cost_brackets.sql`, (2) deploy,
+(3) run the shipping-cost sweep. Without step 1 every shipping-cost upsert fails. Rollback: previous
+app first, then `migrations/down/20261112_01_add_shipping_cost_brackets.sql`.
+
 Ejecutar backend:
 
     python app.py

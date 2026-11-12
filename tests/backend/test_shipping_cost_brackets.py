@@ -253,3 +253,28 @@ def test_memo_key_includes_the_shipping_mode(monkeypatch):
     app_module._quote_seller_shipping("MLA1173065146", other_mode, {}, memo=memo)
 
     assert len(_free_calls(calls)) == 6
+
+
+def _failing_floor(route, floor, response):
+    def fake(url, headers=None, params=None, max_retries=3):
+        if "/shipping_options/free" in url and (params or {}).get("item_price") == floor:
+            return response
+        return route(url, headers, params, max_retries)
+
+    return fake
+
+
+def test_a_lower_bracket_failing_after_the_top_stores_nothing(monkeypatch, captured_upserts):
+    monkeypatch.setattr(app_module, "ml_api_get", _failing_floor(_ml_router([]), 33000, _Resp(500, {})))
+
+    app_module._upsert_seller_shipping_cost("MLA1173065146", REAL["MLA1173065146"]["item"], source="webhook")
+
+    assert captured_upserts == []
+
+
+def test_a_200_without_coverage_is_a_failed_quote(monkeypatch, captured_upserts):
+    monkeypatch.setattr(app_module, "ml_api_get", _failing_floor(_ml_router([]), 33000, _Resp(200, {})))
+
+    app_module._upsert_seller_shipping_cost("MLA1173065146", REAL["MLA1173065146"]["item"], source="webhook")
+
+    assert captured_upserts == []

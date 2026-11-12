@@ -977,6 +977,7 @@ def _item_sale_price(mla_id, item_data, headers):
         if isinstance(amount, (int, float)) and not isinstance(amount, bool) and amount > 0:
             return float(amount)
     price = (item_data or {}).get("price")
+    print(f"⚠️ shipping_cost {mla_id}: sale_price no disponible (status={res.status_code}), uso item.price={price}")
     return float(price) if isinstance(price, (int, float)) and not isinstance(price, bool) else None
 
 
@@ -1004,7 +1005,12 @@ def _quote_seller_shipping(mla_id, item_data, headers, memo=None):
             print(f"⚠️ shipping_cost {mla_id}: status={res.status_code} item_price={params['item_price']}, skip")
             return None
         body = res.json() or {}
-        return body, (body.get("coverage") or {}).get("all_country") or {}
+        cov = (body.get("coverage") or {}).get("all_country") or {}
+        cost = cov.get("list_cost")
+        if not isinstance(cost, (int, float)) or isinstance(cost, bool):
+            print(f"⚠️ shipping_cost {mla_id}: sin list_cost item_price={params['item_price']}, skip")
+            return None
+        return body, cov
 
     floors = SHIPPING_COST_BRACKET_FLOORS
     top = quote(floors[-1])

@@ -986,7 +986,8 @@ def _quote_seller_shipping(mla_id, item_data, headers, memo=None):
     Each bracket is quoted with item_id + item_price=<floor> (floor 0 as price 1), so ML keeps the
     MLA's own billable weight, also under fulfillment. The highest floor is quoted first; it reveals
     the billable weight, and `memo` (a dict the caller keeps, e.g. one sweep) reuses the brackets of
-    a previous MLA with the same seller, billable weight, listing type and logistic type.
+    a previous MLA with the same seller, billable weight, listing type, logistic type and shipping mode
+    (never for an MLA whose listing type is unknown).
     Returns None when any quote fails: a partial bracket list would misprice the missing ones.
     """
     item_data = item_data or {}
@@ -1012,8 +1013,10 @@ def _quote_seller_shipping(mla_id, item_data, headers, memo=None):
     top_body, top_cov = top
     shipping = item_data.get("shipping") or {}
     key = (seller_id, top_cov.get("billable_weight"), item_data.get("listing_type_id"),
-           shipping.get("logistic_type"), floors)
-    cached = memo.get(key) if memo is not None else None
+           shipping.get("logistic_type"), shipping.get("mode"), floors)
+    # without its listing type an MLA could take another listing's discount: quote it in full, never share it
+    shareable = memo is not None and item_data.get("listing_type_id") is not None
+    cached = memo.get(key) if shareable else None
     if cached is None:
         bodies = {floors[-1]: top_body}
         for floor in floors[:-1]:
@@ -1022,7 +1025,7 @@ def _quote_seller_shipping(mla_id, item_data, headers, memo=None):
                 return None
             bodies[floor] = quoted[0]
         cached = bodies
-        if memo is not None:
+        if shareable:
             memo[key] = cached
 
     brackets = [

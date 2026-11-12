@@ -226,3 +226,30 @@ def test_sweep_stores_brackets_with_one_quote_per_repeated_shape(monkeypatch, ca
     assert rows[0][10].adapted[1] == {"min_price": 33000, "list_cost": 6790}
     assert rows[0][5] == "fulfillment"
     assert len(_free_calls(calls)) == 3 + 1  # full bracket set once, then only the weight probe
+
+
+def test_memo_is_not_shared_without_listing_type(monkeypatch):
+    """A failed /items lookup leaves listing_type_id unknown: never reuse another MLA's brackets then."""
+    calls = []
+    monkeypatch.setattr(app_module, "ml_api_get", _ml_router(calls))
+    memo = {}
+    unknown = {"seller_id": 413658225, "shipping": {"logistic_type": "fulfillment"}}
+
+    app_module._quote_seller_shipping("MLA1173065146", unknown, {}, memo=memo)
+    app_module._quote_seller_shipping("MLA1173065146", unknown, {}, memo=memo)
+
+    assert len(_free_calls(calls)) == 6  # both MLAs quoted every bracket
+    assert memo == {}
+
+
+def test_memo_key_includes_the_shipping_mode(monkeypatch):
+    calls = []
+    monkeypatch.setattr(app_module, "ml_api_get", _ml_router(calls))
+    memo = {}
+    item = REAL["MLA1173065146"]["item"]
+    other_mode = {**item, "shipping": {**item["shipping"], "mode": "me1"}}
+
+    app_module._quote_seller_shipping("MLA1173065146", item, {}, memo=memo)
+    app_module._quote_seller_shipping("MLA1173065146", other_mode, {}, memo=memo)
+
+    assert len(_free_calls(calls)) == 6

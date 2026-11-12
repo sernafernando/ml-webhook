@@ -47,6 +47,12 @@ Variables de entorno en un archivo `.env`:
     WEBHOOKS_CURSOR_MODE=0
     WEBHOOK_TOPICS_CACHE_TTL=10
     REDIS_URL=redis://localhost:6379/0
+    SHIPPING_COST_BRACKET_FLOORS=0,33000,50000
+
+`SHIPPING_COST_BRACKET_FLOORS` are the price floors of ML's seller shipping-cost brackets
+(ascending, starting at 0; default `0,33000,50000`). `ml_seller_shipping_costs` stores the cost of
+each bracket in `cost_by_bracket` and `list_cost` at the item's current `sale_price`. If ML moves a
+bracket edge, update this variable and re-run the shipping-cost sweep.
 
 Ejecutar backend:
 

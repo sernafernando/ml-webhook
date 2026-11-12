@@ -926,61 +926,166 @@ def _run_preview_in_background(resource: str):
     t = threading.Thread(target=_target, daemon=True)
     t.start()
 
+_DEFAULT_BRACKET_FLOORS = (0, 33000, 50000)
+
+
+def _parse_bracket_floors(raw):
+    """Price floors of ML's seller shipping-cost brackets, ascending; the default on empty or invalid input."""
+    try:
+        floors = tuple(sorted({int(part) for part in (raw or "").split(",") if part.strip()}))
+    except ValueError:
+        return _DEFAULT_BRACKET_FLOORS
+    if not floors or floors[0] != 0:
+        return _DEFAULT_BRACKET_FLOORS
+    return floors
+
+
+# ML charges the seller a different shipping cost per item-price bracket (verified 2026-11-12:
+# <33000 => 0, 33000..49999 and >=50000 differ). Quoting with item_id alone prices the item at its
+# LIST price, so a promo below a floor was stored with the next bracket's cost.
+SHIPPING_COST_BRACKET_FLOORS = _parse_bracket_floors(os.getenv("SHIPPING_COST_BRACKET_FLOORS", ""))
+
+SHIPPING_COST_UPSERT_SQL = """
+    INSERT INTO ml_seller_shipping_costs
+        (mla_id, seller_id, list_cost, iva_included, currency_id,
+         billable_weight, logistic_type, free_shipping, raw_payload,
+         source, sale_price, cost_by_bracket, fetched_at)
+    VALUES {values}
+    ON CONFLICT (mla_id) DO UPDATE SET
+        seller_id = EXCLUDED.seller_id,
+        list_cost = EXCLUDED.list_cost,
+        iva_included = EXCLUDED.iva_included,
+        currency_id = EXCLUDED.currency_id,
+        billable_weight = EXCLUDED.billable_weight,
+        logistic_type = COALESCE(EXCLUDED.logistic_type, ml_seller_shipping_costs.logistic_type),
+        free_shipping = EXCLUDED.free_shipping,
+        raw_payload = EXCLUDED.raw_payload,
+        source = EXCLUDED.source,
+        sale_price = EXCLUDED.sale_price,
+        cost_by_bracket = EXCLUDED.cost_by_bracket,
+        fetched_at = NOW()
+"""
+SHIPPING_COST_ROW_TEMPLATE = "(%s, %s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
+
+
+def _item_sale_price(mla_id, item_data, headers):
+    """The price the item sells at now (promo price when one is active); item.price when ML does not say."""
+    res = ml_api_get(f"https://api.mercadolibre.com/items/{mla_id}/sale_price", headers=headers,
+                     params={"context": "channel_marketplace"})
+    if res.status_code == 200:
+        amount = (res.json() or {}).get("amount")
+        if isinstance(amount, (int, float)) and not isinstance(amount, bool) and amount > 0:
+            return float(amount)
+    price = (item_data or {}).get("price")
+    return float(price) if isinstance(price, (int, float)) and not isinstance(price, bool) else None
+
+
+def _quote_seller_shipping(mla_id, item_data, headers, memo=None):
+    """The seller's shipping cost for this MLA in every price bracket, and at its current sale price.
+
+    Each bracket is quoted with item_id + item_price=<floor> (floor 0 as price 1), so ML keeps the
+    MLA's own billable weight, also under fulfillment. The highest floor is quoted first; it reveals
+    the billable weight, and `memo` (a dict the caller keeps, e.g. one sweep) reuses the brackets of
+    a previous MLA with the same seller, billable weight, listing type and logistic type.
+    Returns None when any quote fails: a partial bracket list would misprice the missing ones.
+    """
+    item_data = item_data or {}
+    seller_id = item_data.get("seller_id")
+    if seller_id is None:
+        print(f"⚠️ shipping_cost {mla_id}: seller_id ausente en item_data, skip")
+        return None
+    url = f"https://api.mercadolibre.com/users/{seller_id}/shipping_options/free"
+
+    def quote(floor):
+        params = {"item_id": mla_id, "verbose": "true", "item_price": floor or 1}
+        res = ml_api_get(url, headers=headers, params=params)
+        if res.status_code != 200:
+            print(f"⚠️ shipping_cost {mla_id}: status={res.status_code} item_price={params['item_price']}, skip")
+            return None
+        body = res.json() or {}
+        return body, (body.get("coverage") or {}).get("all_country") or {}
+
+    floors = SHIPPING_COST_BRACKET_FLOORS
+    top = quote(floors[-1])
+    if top is None:
+        return None
+    top_body, top_cov = top
+    shipping = item_data.get("shipping") or {}
+    key = (seller_id, top_cov.get("billable_weight"), item_data.get("listing_type_id"),
+           shipping.get("logistic_type"), floors)
+    cached = memo.get(key) if memo is not None else None
+    if cached is None:
+        bodies = {floors[-1]: top_body}
+        for floor in floors[:-1]:
+            quoted = quote(floor)
+            if quoted is None:
+                return None
+            bodies[floor] = quoted[0]
+        cached = bodies
+        if memo is not None:
+            memo[key] = cached
+
+    brackets = [
+        {"min_price": floor, "list_cost": ((cached[floor].get("coverage") or {}).get("all_country") or {}).get("list_cost")}
+        for floor in floors
+    ]
+    sale_price = _item_sale_price(mla_id, item_data, headers)
+    current_floor = max((f for f in floors if sale_price is not None and f <= sale_price), default=floors[-1])
+    current_body = cached[current_floor]
+    return {
+        "seller_id": seller_id,
+        "list_cost": next(b["list_cost"] for b in brackets if b["min_price"] == current_floor),
+        "currency_id": top_cov.get("currency_id"),
+        "billable_weight": top_cov.get("billable_weight"),
+        "sale_price": sale_price,
+        "cost_by_bracket": brackets,
+        "raw_payload": current_body,
+    }
+
+
+def _shipping_cost_row(mla_id, quote, logistic_type, free_shipping, source):
+    """The UPSERT parameters (SHIPPING_COST_ROW_TEMPLATE order) for one quoted MLA."""
+    return (
+        mla_id, quote["seller_id"], quote["list_cost"], quote["currency_id"],
+        quote["billable_weight"], logistic_type, free_shipping, Json(quote["raw_payload"]),
+        source, quote["sale_price"], Json(quote["cost_by_bracket"]),
+    )
+
+
+def _items_for_shipping(mla_ids, headers):
+    """{mla: item} with the fields a shipping quote needs, read with the /items multiget (20 ids per call)."""
+    items = {}
+    for i in range(0, len(mla_ids), 20):
+        chunk = mla_ids[i:i + 20]
+        res = ml_api_get("https://api.mercadolibre.com/items", headers=headers, params={
+            "ids": ",".join(chunk), "attributes": "id,seller_id,price,listing_type_id,shipping"})
+        if res.status_code != 200:
+            print(f"⚠️ sweep: /items multiget status={res.status_code} for {len(chunk)} MLAs")
+            continue
+        for entry in res.json() or []:
+            body = (entry or {}).get("body") or {}
+            if (entry or {}).get("code") == 200 and body.get("id"):
+                items[body["id"]] = body
+    return items
+
+
 def _upsert_seller_shipping_cost(mla_id, item_data, source):
-    """Best-effort: fetch /shipping_options/free and UPSERT cost row.
+    """Best-effort: quote the seller shipping cost (per bracket and at the sale price) and UPSERT the row.
 
     Never raises — logs and swallows. Called from webhook flow (source="webhook")
     and from sweep job (source="sweep"). iva_included hardcoded TRUE per PASO 1 finding.
     """
     try:
-        seller_id = (item_data or {}).get("seller_id")
-        if seller_id is None:
-            print(f"⚠️ shipping_cost {mla_id}: seller_id ausente en item_data, skip")
+        headers = {"Authorization": f"Bearer {get_token()}"}
+        quote = _quote_seller_shipping(mla_id, item_data, headers)
+        if quote is None:
             return
-
         shipping = (item_data or {}).get("shipping") or {}
-        free_shipping = shipping.get("free_shipping")
-        logistic_type = shipping.get("logistic_type")
-
-        token = get_token()
-        headers = {"Authorization": f"Bearer {token}"}
-        url = f"https://api.mercadolibre.com/users/{seller_id}/shipping_options/free"
-        res = ml_api_get(url, headers=headers, params={"item_id": mla_id, "verbose": "true"})
-
-        if res.status_code != 200:
-            print(f"⚠️ shipping_cost {mla_id}: status={res.status_code}, skip")
-            return
-
-        body = res.json()
-        cov = ((body or {}).get("coverage") or {}).get("all_country") or {}
-        list_cost = cov.get("list_cost")
-        currency_id = cov.get("currency_id")
-        billable_weight = cov.get("billable_weight")
-
+        row = _shipping_cost_row(mla_id, quote, shipping.get("logistic_type"), shipping.get("free_shipping"), source)
         with db_cursor() as cur:
-            cur.execute("""
-                INSERT INTO ml_seller_shipping_costs
-                    (mla_id, seller_id, list_cost, iva_included, currency_id,
-                     billable_weight, logistic_type, free_shipping, raw_payload,
-                     source, fetched_at)
-                VALUES (%s, %s, %s, TRUE, %s, %s, %s, %s, %s, %s, NOW())
-                ON CONFLICT (mla_id) DO UPDATE SET
-                    seller_id = EXCLUDED.seller_id,
-                    list_cost = EXCLUDED.list_cost,
-                    iva_included = EXCLUDED.iva_included,
-                    currency_id = EXCLUDED.currency_id,
-                    billable_weight = EXCLUDED.billable_weight,
-                    logistic_type = COALESCE(EXCLUDED.logistic_type, ml_seller_shipping_costs.logistic_type),
-                    free_shipping = EXCLUDED.free_shipping,
-                    raw_payload = EXCLUDED.raw_payload,
-                    source = EXCLUDED.source,
-                    fetched_at = NOW();
-            """, (
-                mla_id, seller_id, list_cost, currency_id,
-                billable_weight, logistic_type, free_shipping, Json(body),
-                source,
-            ))
-        print(f"✅ shipping_cost {mla_id} upsert (source={source}, list_cost={list_cost})")
+            cur.execute(SHIPPING_COST_UPSERT_SQL.format(values=SHIPPING_COST_ROW_TEMPLATE), row)
+        print(f"✅ shipping_cost {mla_id} upsert (source={source}, list_cost={quote['list_cost']}, "
+              f"sale_price={quote['sale_price']})")
     except Exception as e:
         print(f"⚠️ shipping_cost {mla_id}: error {e}")
 
@@ -1102,24 +1207,9 @@ def _sweep_seller_shipping_costs(limit, dry_run, min_age_hours):
                 with conn.cursor() as cur:
                     execute_values(
                         cur,
-                        """INSERT INTO ml_seller_shipping_costs
-                           (mla_id, seller_id, list_cost, iva_included, currency_id,
-                            billable_weight, logistic_type, free_shipping, raw_payload,
-                            source, fetched_at)
-                           VALUES %s
-                           ON CONFLICT (mla_id) DO UPDATE SET
-                              seller_id = EXCLUDED.seller_id,
-                              list_cost = EXCLUDED.list_cost,
-                              iva_included = EXCLUDED.iva_included,
-                              currency_id = EXCLUDED.currency_id,
-                              billable_weight = EXCLUDED.billable_weight,
-                              logistic_type = COALESCE(EXCLUDED.logistic_type, ml_seller_shipping_costs.logistic_type),
-                              free_shipping = EXCLUDED.free_shipping,
-                              raw_payload = EXCLUDED.raw_payload,
-                              source = EXCLUDED.source,
-                              fetched_at = NOW()""",
+                        SHIPPING_COST_UPSERT_SQL.format(values="%s"),
                         buffer,
-                        template="(%s, %s, %s, TRUE, %s, %s, %s, %s, %s, %s, NOW())",
+                        template=SHIPPING_COST_ROW_TEMPLATE,
                         page_size=BATCH,
                     )
                 conn.commit()
@@ -1133,22 +1223,25 @@ def _sweep_seller_shipping_costs(limit, dry_run, min_age_hours):
                 print(f"❌ sweep: flush FAILED ({type(flush_err).__name__}: {flush_err}). Lost batch of {n} rows.")
                 raise
 
+        items = _items_for_shipping(to_process, headers)
+        print(f"🔍 sweep: item data for {len(items)}/{len(to_process)} MLAs (price/listing_type/shipping)")
+        memo = {}  # brackets shared by MLAs with the same seller, billable weight, listing and logistic type
+
         for mla_id in to_process:
             _sweep_state["last_mla"] = mla_id
             cached_logistic, cached_fs = cache.get(mla_id, (None, None))
             try:
-                url = f"https://api.mercadolibre.com/users/{seller_id}/shipping_options/free"
-                res = ml_api_get(url, headers=headers, params={"item_id": mla_id, "verbose": "true"})
-                if res.status_code != 200:
-                    print(f"⚠️ shipping_cost {mla_id}: status={res.status_code}, skip")
+                item = items.get(mla_id) or {"seller_id": seller_id, "shipping": {"logistic_type": cached_logistic}}
+                item.setdefault("seller_id", seller_id)
+                quote = _quote_seller_shipping(mla_id, item, headers, memo=memo)
+                if quote is None:
                     _sweep_state["errors"] += 1
                     continue
-                body = res.json()
-                cov = ((body or {}).get("coverage") or {}).get("all_country") or {}
-                buffer.append((
-                    mla_id, seller_id, cov.get("list_cost"), cov.get("currency_id"),
-                    cov.get("billable_weight"), cached_logistic, cached_fs, Json(body),
-                    "sweep",
+                shipping = item.get("shipping") or {}
+                fs = shipping.get("free_shipping")
+                buffer.append(_shipping_cost_row(
+                    mla_id, quote, shipping.get("logistic_type") or cached_logistic,
+                    cached_fs if fs is None else fs, "sweep",
                 ))
                 _sweep_state["processed"] += 1
                 if len(buffer) >= BATCH:
@@ -3297,7 +3390,7 @@ def _render_shipping_cost_section(mla_id, item_data, headers):
             <p class="small text-warning mb-2">seller_id={seller_id} · <code>{request_url}</code></p>
             <table class="table table-dark table-sm align-middle">
               <tbody>
-                <tr><td><strong>list_cost</strong> (← este guardamos / lee pricing)</td><td>{list_cost} {currency_id or ""}</td></tr>
+                <tr><td><strong>list_cost</strong> (a item.price, sin item_price: lo guardado va a sale_price y por tramo)</td><td>{list_cost} {currency_id or ""}</td></tr>
                 <tr><td>billable_weight</td><td>{billable_weight}</td></tr>
                 <tr><td>discount.promoted_amount</td><td>{promoted_amount}</td></tr>
                 <tr><td>discount.rate</td><td>{rate}</td></tr>

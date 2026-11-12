@@ -1,0 +1,215 @@
+{
+ "_source": "Captured verbatim from api.mercadolibre.com at 2026-11-12T20:00:12+00:00 (GET only). Keys are the request's item_price ('none' = not sent).",
+ "MLA1173065146": {
+  "item": {
+   "id": "MLA1173065146",
+   "seller_id": 413658225,
+   "price": 65472.0,
+   "listing_type_id": "gold_special",
+   "shipping": {
+    "mode": "me2",
+    "methods": [],
+    "tags": [
+     "self_service_in",
+     "mandatory_free_shipping"
+    ],
+    "dimensions": null,
+    "local_pick_up": false,
+    "free_shipping": true,
+    "logistic_type": "fulfillment",
+    "store_pick_up": false
+   },
+   "status": "active"
+  },
+  "sale_price": {
+   "price_id": "1630",
+   "amount": 41999.0,
+   "regular_amount": 65472.0,
+   "currency_id": "ARS",
+   "reference_date": "2026-11-12T20:00:12Z",
+   "metadata": {
+    "campaign_id": "P-MLA18187140",
+    "promotion_id": "OFFER-MLA1173065146-11711967833",
+    "promotion_type": "marketplace_campaign"
+   }
+  },
+  "free_by_item_price": {
+   "none": {
+    "coverage": {
+     "all_country": {
+      "list_cost": 7290,
+      "currency_id": "ARS",
+      "billable_weight": 396,
+      "discount": {
+       "rate": 0.5,
+       "type": "mandatory",
+       "promoted_amount": 14580
+      }
+     }
+    }
+   },
+   "1": {
+    "coverage": {
+     "all_country": {
+      "list_cost": 0,
+      "currency_id": "ARS",
+      "billable_weight": 396,
+      "discount": {
+       "rate": 0,
+       "type": "none",
+       "promoted_amount": 0
+      }
+     }
+    }
+   },
+   "33000": {
+    "coverage": {
+     "all_country": {
+      "list_cost": 6790,
+      "currency_id": "ARS",
+      "billable_weight": 396,
+      "discount": {
+       "rate": 0.5,
+       "type": "mandatory",
+       "promoted_amount": 13580
+      }
+     }
+    }
+   },
+   "50000": {
+    "coverage": {
+     "all_country": {
+      "list_cost": 7290,
+      "currency_id": "ARS",
+      "billable_weight": 396,
+      "discount": {
+       "rate": 0.5,
+       "type": "mandatory",
+       "promoted_amount": 14580
+      }
+     }
+    }
+   },
+   "41999.0": {
+    "coverage": {
+     "all_country": {
+      "list_cost": 6790,
+      "currency_id": "ARS",
+      "billable_weight": 396,
+      "discount": {
+       "rate": 0.5,
+       "type": "mandatory",
+       "promoted_amount": 13580
+      }
+     }
+    }
+   }
+  }
+ },
+ "MLA4153290772": {
+  "item": {
+   "id": "MLA4153290772",
+   "seller_id": 413658225,
+   "price": 54370.0,
+   "listing_type_id": "gold_pro",
+   "shipping": {
+    "mode": "me2",
+    "methods": [],
+    "tags": [
+     "self_service_in",
+     "mandatory_free_shipping"
+    ],
+    "dimensions": null,
+    "local_pick_up": true,
+    "free_shipping": true,
+    "logistic_type": "cross_docking",
+    "store_pick_up": false
+   },
+   "status": "active"
+  },
+  "sale_price": {
+   "price_id": "4",
+   "amount": 40390.0,
+   "regular_amount": 54370.0,
+   "currency_id": "ARS",
+   "reference_date": "2026-11-12T20:00:14Z",
+   "metadata": {
+    "campaign_id": "C-MLA1823065",
+    "promotion_id": "OFFER-MLA4153290772-11719424252",
+    "promotion_type": "custom"
+   }
+  },
+  "free_by_item_price": {
+   "none": {
+    "coverage": {
+     "all_country": {
+      "list_cost": 7290,
+      "currency_id": "ARS",
+      "billable_weight": 325,
+      "discount": {
+       "rate": 0.5,
+       "type": "mandatory",
+       "promoted_amount": 14580
+      }
+     }
+    }
+   },
+   "1": {
+    "coverage": {
+     "all_country": {
+      "list_cost": 0,
+      "currency_id": "ARS",
+      "billable_weight": 325,
+      "discount": {
+       "rate": 0,
+       "type": "none",
+       "promoted_amount": 0
+      }
+     }
+    }
+   },
+   "33000": {
+    "coverage": {
+     "all_country": {
+      "list_cost": 6790,
+      "currency_id": "ARS",
+      "billable_weight": 325,
+      "discount": {
+       "rate": 0.5,
+       "type": "mandatory",
+       "promoted_amount": 13580
+      }
+     }
+    }
+   },
+   "50000": {
+    "coverage": {
+     "all_country": {
+      "list_cost": 7290,
+      "currency_id": "ARS",
+      "billable_weight": 325,
+      "discount": {
+       "rate": 0.5,
+       "type": "mandatory",
+       "promoted_amount": 14580
+      }
+     }
+    }
+   },
+   "40390.0": {
+    "coverage": {
+     "all_country": {
+      "list_cost": 6790,
+      "currency_id": "ARS",
+      "billable_weight": 325,
+      "discount": {
+       "rate": 0.5,
+       "type": "mandatory",
+       "promoted_amount": 13580
+      }
+     }
+    }
+   }
+  }
+ }
+}

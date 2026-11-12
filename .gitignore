@@ -22,6 +22,7 @@ instance/
 *.pid
 *.gz
 *.json
+!tests/backend/fixtures/*.json
 webhooks/          # donde guardás eventos entrantes
 last_webhook.json  # último webhook recibido
 

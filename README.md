@@ -154,6 +154,22 @@ que es un proxy de lectura arbitraria y está marcado para cerrarse.
   `ACTIVITY_PING_TOKEN`; el token viaja como `Authorization: Bearer <token>` y
   sin él no se manda el header. Las dos se leen del `.env` vía `load_dotenv()`,
   así que **hay que reiniciar el servicio** para que las tome.
+- **Aviso de precios de promos a pricing-app.** Cuando `reconcile_item_promotions`
+  cambia de verdad el espejo de un MLA (una promo nueva, un cambio de estado o de
+  precio, o una promo cerrada), avisa a pricing-app con
+  `POST /api/promociones/recompute-precios` (`{"mlas": ["MLA..."]}`) para que
+  recalcule ya las columnas de precio del item, en vez de esperar a su cron.
+  Usa el mismo token que el ping (`ACTIVITY_PING_TOKEN`, usuario de servicio con
+  `ml_ops.ingest`). La URL sale de `PROMO_RECOMPUTE_URL`; sin ella se arma con
+  el host de `ACTIVITY_PING_URL`, y sin ninguna de las dos no se avisa.
+  Best-effort: si pricing no contesta no se reintenta, su cron lo levanta igual.
+  Tras un fallo (pricing caído, timeout o 5xx) deja de avisar 60 s, para no
+  sumarle segundos al worker de promos por cada MLA mientras pricing está caído.
+  El último aviso se ve en `GET /api/ml/activity/ping-status`
+  (`recompute_precios`). En `ml_item_promotions`, `updated_at` se mueve solo
+  cuando cambia `status` o `price`: es la señal que pricing lee como "esta promo
+  cambió". `tests/backend/test_promos_updated_at_pg.py` corre ese SQL contra un
+  Postgres real si `ML_WEBHOOK_TEST_PG_URL` apunta a una base descartable.
 - `GET /api/ml/claims?resource=...` → reclamos y devoluciones, para saber por qué
   se canceló una venta. Acepta `/post-purchase/v1/claims/search` y
   `/post-purchase/v1/claims/{id}`. También se **proyecta**: quedan el motivo, el

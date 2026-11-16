@@ -3375,6 +3375,11 @@ def ml_activity_ping_status():
         "token_presente": bool(ACTIVITY_PING_TOKEN),
         "topics": list(ACTIVITY_TOPICS),
         "ultimo": _ultimo_ping,
+        # Aviso de recompute de precios de promos (mismo destino y token).
+        "recompute_precios": {
+            "configurado": bool(_promo_recompute_url()),
+            "ultimo": _ultimo_recompute,
+        },
     })
 
 
@@ -4238,6 +4243,15 @@ def _promo_num(v):
 
 
 def _upsert_item_promo(cur, mla, promo_key, promo_type, sub_type, entry):
+    """Upsert de una fila de ml_item_promotions. Devuelve True si la fila es nueva
+    o cambio su status o su price.
+
+    updated_at se mueve SOLO en ese caso: pricing-app lo lee como "esta promo
+    cambio" (su cron toma las filas con updated_at posterior a su marca, y lo usa
+    como hora de activacion frente a un precio manual). Moverlo en cada pasada
+    hacia que cada reconcile pareciera una novedad. El resto de las columnas
+    (payload, minimos, sugerido) se refresca igual, sin mover updated_at.
+    El RETURNING compara con NOW(), que es fijo dentro de la transaccion."""
     cur.execute("""
         INSERT INTO ml_item_promotions (
             mla, promotion_id, promotion_type, sub_type, status,
@@ -4254,7 +4268,10 @@ def _upsert_item_promo(cur, mla, promo_key, promo_type, sub_type, entry):
             max_discounted_price = EXCLUDED.max_discounted_price,
             suggested_discounted_price = EXCLUDED.suggested_discounted_price,
             payload = EXCLUDED.payload,
-            updated_at = NOW();
+            updated_at = CASE WHEN ml_item_promotions.status IS DISTINCT FROM EXCLUDED.status
+                              OR ml_item_promotions.price IS DISTINCT FROM EXCLUDED.price
+                              THEN NOW() ELSE ml_item_promotions.updated_at END
+        RETURNING updated_at = NOW();
     """, (
         mla, promo_key, promo_type, sub_type, entry.get("status"),
         _promo_num(entry.get("original_price")), _promo_num(entry.get("price")),
@@ -4262,6 +4279,8 @@ def _upsert_item_promo(cur, mla, promo_key, promo_type, sub_type, entry):
         _promo_num(entry.get("max_discounted_price")),
         _promo_num(entry.get("suggested_discounted_price")), Json(entry),
     ))
+    row = cur.fetchone()
+    return bool(row and row[0])
 
 
 def _persist_promotions(data):
@@ -4300,20 +4319,32 @@ def _persist_promotions(data):
 
 
 def _persist_item_promos(mla, data):
-    """Write-through: promos (candidate/started) de un item -> ml_item_promotions."""
+    """Write-through: promos (candidate/started) de un item -> ml_item_promotions.
+    Devuelve True si alguna fila es nueva o cambio su status o su price."""
+    cambio = False
     try:
         if not isinstance(data, list):
-            return
+            return False
+        # Una entrada por key (gana la ultima, que es lo que quedaria igual en la
+        # tabla): dos upserts de la misma fila en una transaccion hacian que el
+        # segundo viera el updated_at = NOW() del primero y reportara un cambio.
+        por_key = {}
+        for e in data:
+            if not isinstance(e, dict):
+                continue
+            promo_key = e.get("id") or e.get("type")  # PRICE_DISCOUNT no trae id
+            if promo_key:
+                por_key[promo_key] = e
+        if not por_key:
+            return False
         with db_cursor() as cur:
-            for e in data:
-                if not isinstance(e, dict):
-                    continue
-                promo_key = e.get("id") or e.get("type")  # PRICE_DISCOUNT no trae id
-                if not promo_key:
-                    continue
-                _upsert_item_promo(cur, mla, promo_key, e.get("type"), e.get("sub_type"), e)
+            for promo_key, e in por_key.items():
+                if _upsert_item_promo(cur, mla, promo_key, e.get("type"), e.get("sub_type"), e):
+                    cambio = True
     except Exception as ex:
         print("⚠️ write-through ml_item_promotions (item) fallo:", ex)
+        return False
+    return cambio
 
 
 def _persist_promo_items(promo_id, promotion_type, data):
@@ -4386,7 +4417,7 @@ def reconcile_item_promotions(mla):
         return False
     data = res.json()
     reconcile_item_promotions.ultimo_error = None
-    _persist_item_promos(mla, data)
+    cambio = bool(_persist_item_promos(mla, data))
     # Fail-safe: solo se cierra si el cuerpo es una lista (incluida la vacia = el
     # item no tiene promos). Cualquier otra forma es inesperada: no se cierra nada.
     if isinstance(data, list):
@@ -4400,9 +4431,85 @@ def reconcile_item_promotions(mla):
                     "WHERE mla=%s AND status = ANY(%s) AND NOT (promotion_id = ANY(%s))",
                     (mla, list(_PROMO_ACTIVE_STATUSES), current),
                 )
+                if (getattr(cur, "rowcount", 0) or 0) > 0:
+                    cambio = True
         except Exception as e:
             print("⚠️ reconcile close-set fallo:", e)
+    if cambio:
+        notificar_recompute_precios(mla)
     return True
+
+
+# -------------------------------------------------------------
+# Aviso a pricing-app: recalcular ya los precios de un item
+# -------------------------------------------------------------
+# Cuando el espejo de promos de un MLA cambia de verdad (estado o precio, o una
+# promo cerrada), pricing-app recalcula las columnas de precio del item con la
+# misma regla que usa al aplicar una promo desde su panel. Sin este aviso se
+# enteraba solo por su cron de 3 veces por dia.
+#
+# Best-effort: si pricing no contesta, no se reintenta ni se propaga; su cron
+# lo levanta igual. Va con el mismo usuario de servicio (y token) que el ping de
+# actividad. Sin URL propia se arma con el host del ping, que es pricing-app;
+# sin ninguna de las dos, no se avisa.
+PROMO_RECOMPUTE_URL = os.getenv("PROMO_RECOMPUTE_URL")
+_PROMO_RECOMPUTE_PATH = "/api/promociones/recompute-precios"
+PROMO_RECOMPUTE_TIMEOUT = (2, 3)
+# Tras un fallo de pricing (caido, timeout o 5xx) no se avisa por este rato: con
+# pricing caido cada aviso le sumaba hasta 5 s al worker de promos. Lo que no se
+# avisa lo levanta el cron de pricing. Un 4xx no pausa: es un problema de ese
+# aviso, no de pricing.
+PROMO_RECOMPUTE_PAUSA_TRAS_FALLO = 60
+_recompute_pausa_hasta = 0.0
+# Ultimo aviso, para diagnostico (mismo motivo que _ultimo_ping).
+_ultimo_recompute = None
+
+
+def _promo_recompute_url():
+    if PROMO_RECOMPUTE_URL:
+        return PROMO_RECOMPUTE_URL
+    if not ACTIVITY_PING_URL:
+        return None
+    try:
+        partes = urlsplit(ACTIVITY_PING_URL)
+    except ValueError:
+        return None
+    if not partes.scheme or not partes.netloc:
+        return None
+    return f"{partes.scheme}://{partes.netloc}{_PROMO_RECOMPUTE_PATH}"
+
+
+def notificar_recompute_precios(mla):
+    """Pide a pricing-app que recalcule los precios del item de `mla`. Nunca levanta."""
+    global _ultimo_recompute, _recompute_pausa_hasta
+    url = _promo_recompute_url()
+    if not url:
+        return
+    if time.monotonic() < _recompute_pausa_hasta:
+        return
+    headers = {"Authorization": f"Bearer {ACTIVITY_PING_TOKEN}"} if ACTIVITY_PING_TOKEN else {}
+    try:
+        res = requests.post(url, json={"mlas": [mla]}, headers=headers, timeout=PROMO_RECOMPUTE_TIMEOUT)
+        _ultimo_recompute = {
+            "cuando": datetime.now(ZoneInfo("UTC")).isoformat(),
+            "mla": mla,
+            "status": res.status_code,
+            "error": None,
+        }
+        if res.status_code >= 500:
+            _recompute_pausa_hasta = time.monotonic() + PROMO_RECOMPUTE_PAUSA_TRAS_FALLO
+        if res.status_code >= 400:
+            # El token nunca va al log.
+            print(f"⚠️ Aviso de recompute de precios rechazado ({mla}): status={res.status_code}")
+    except Exception as e:
+        _recompute_pausa_hasta = time.monotonic() + PROMO_RECOMPUTE_PAUSA_TRAS_FALLO
+        _ultimo_recompute = {
+            "cuando": datetime.now(ZoneInfo("UTC")).isoformat(),
+            "mla": mla,
+            "status": None,
+            "error": _sin_token(str(e)),
+        }
+        print(f"⚠️ Aviso de recompute de precios fallido ({mla}): {_sin_token(str(e))}")
 
 
 def _process_promotion_webhook(resource):
